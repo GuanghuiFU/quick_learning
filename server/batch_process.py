@@ -151,15 +151,19 @@ def _is_english(text: str) -> bool:
 
 
 async def process_one(summarizer, stt, video: Path, priority: str, mode: str, course: str | None = None) -> None:
+    from server import task_db
+
     title = video.stem
     print(f"\n=== 处理: {video.name} ({video.stat().st_size / 1e6:.1f} MB) ===")
+    course_key = course or "default"
 
-    # 断点续传：若完整版笔记已存在，跳过整集（避免重复消耗 API）
-    if mode in ("note", "both"):
-        note_path = writer._note_dir(course) / f"{writer._safe_filename(title)}.md"
-        if note_path.exists():
-            print(f"  [跳过] {title} 已处理过（完整版笔记存在）")
-            return
+    # 登记到状态数据库
+    task_db.register_episode(course_key, str(video))
+
+    # 断点续传：数据库记录已完成则跳过整集（避免重复消耗 API）
+    if mode in ("note", "both") and task_db.is_episode_done(course_key, str(video), "notes"):
+        print(f"  [跳过] {title} 已处理过（数据库记录 notes_done）")
+        return
 
     # 1) 语音转写（返回全文 + 带时间戳分句）
     speech, segments = await transcribe_video(stt, video)
@@ -180,6 +184,7 @@ async def process_one(summarizer, stt, video: Path, priority: str, mode: str, co
         writer.save_transcript_bilingual(
             title, f"local:{video}", en_speech, translated, segments=segments, course=course
         )
+        task_db.mark_stage(course_key, str(video), "transcript")
         print(f"[双语文字稿已保存] {title}_文字稿.md + _文字稿_双语.md")
     else:
         writer.save_transcript(title, f"local:{video}", speech, segments=segments, course=course)
@@ -210,6 +215,7 @@ async def process_one(summarizer, stt, video: Path, priority: str, mode: str, co
             body = summarizer.summarize_chinese(title, f"local:{video}", speech, translated, slides)
             writer.save_note(title, f"local:{video}", body, slides, course=course)
             print("[笔记已生成（中文）]")
+        task_db.mark_stage(course_key, str(video), "notes")
         return
 
     if mode in ("speedread", "both"):
@@ -220,6 +226,7 @@ async def process_one(summarizer, stt, video: Path, priority: str, mode: str, co
         body = summarizer.summarize(title, f"local:{video}", subtitle, speech, slides, priority)
         writer.save_note(title, f"local:{video}", body, slides, course=course)
         print("[笔记已生成]")
+    task_db.mark_stage(course_key, str(video), "notes")
 
 
 async def main() -> None:
