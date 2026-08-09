@@ -117,3 +117,45 @@ class QwenVision:
             return {"worthy": bool(d.get("worthy", False)), "reason": str(d.get("reason", ""))}
         except Exception:  # noqa: BLE001
             return {"worthy": False, "reason": f"JSON 解析失败: {text[:80]}"}
+
+    def assess_anomaly(self, image_path: Path | str) -> dict:
+        """仅检测画面是否异常（花屏/全黑/严重遮挡/完全空白），不判断内容是否重要。
+
+        返回 {"anomaly": bool, "reason": str}。默认不拒绝（permissive），
+        重要与否由本地规则（OCR内容量+复杂度）决定，避免视觉API误拒有效画面。
+        """
+        path = Path(image_path)
+        if not path.exists():
+            return {"anomaly": False, "reason": f"图片不存在: {path}"}
+        url = self._upload_get_url(path)
+        prompt = """这张图片是视频中的一帧。只判断画面是否有**技术异常**：
+- 花屏/马赛克/撕裂、全黑、全白、严重遮挡、摄像头被挡住 → anomaly=true
+- 画面正常（即使是纯讲解/普通画面）→ anomaly=false
+
+不要判断内容是否重要。只返回 JSON：{"anomaly": true/false, "reason": "原因"}"""
+        payload = {
+            "model": self.model,
+            "input": {
+                "messages": [
+                    {"role": "user", "content": [
+                        {"type": "image", "image": url},
+                        {"type": "text", "text": prompt},
+                    ]}
+                ]
+            },
+        }
+        try:
+            resp = httpx.post(GEN_URL, json=payload, headers=self._headers(with_content=True), timeout=90)
+            resp.raise_for_status()
+            data = resp.json()
+            text = data["output"]["choices"][0]["message"]["content"][0]["text"]
+        except Exception as e:  # noqa: BLE001
+            return {"anomaly": False, "reason": f"视觉检查失败: {str(e)[:40]}"}
+        m = re.search(r"\{.*\}", text, re.S)
+        if not m:
+            return {"anomaly": False, "reason": f"非 JSON: {text[:60]}"}
+        try:
+            d = json.loads(m.group(0))
+            return {"anomaly": bool(d.get("anomaly", False)), "reason": str(d.get("reason", ""))}
+        except Exception:  # noqa: BLE001
+            return {"anomaly": False, "reason": f"JSON 解析失败: {text[:60]}"}

@@ -118,12 +118,54 @@ def sample_candidates(video: Path, segments: list[dict], out_dir: Path, fps: flo
 
 # 去重阈值：画面主体差异低于此值视为同一张幻灯片（只有字幕变化）
 DEDUP_DIFF = 0.05
+# 关键画面最小 OCR 内容量（低于此值视为无信息画面，直接过滤）
+MIN_KEYFRAME_OCR = 50
+# 画面复杂度下限（边缘方差，低于=纯色/无内容）
+MIN_EDGE_VAR = 100
+
+
+def _frame_ocr_len(fp) -> int:
+    """本地 OCR 提取文字量（PaddleOCR，快，无 API）。"""
+    try:
+        return len(vision.ocr_slide_text(fp).strip())
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _frame_complexity(fp) -> tuple[float, float]:
+    """本地计算画面复杂度：(边缘方差, 颜色方差)。纯色/背景 → 低。"""
+    try:
+        gray = np.asarray(Image.open(fp).convert("L"), dtype=np.float32)
+        grad = np.gradient(gray)
+        edge_var = float(np.var(grad[0]) + np.var(grad[1]))
+        rgb = np.asarray(Image.open(fp).convert("RGB"), dtype=np.float32)
+        color_var = float(rgb.std(axis=(0, 1)).mean())
+        return edge_var, color_var
+    except Exception:  # noqa: BLE001
+        return 0.0, 0.0
+
+
+def _local_score(c: dict) -> float:
+    """本地确定性评分：OCR 内容量 + 画面复杂度（不依赖 AI 判断）。
+
+    用于去重保留策略和候选排序，可解释、稳定。
+    """
+    ocr_len = c.get("ocr_len")
+    if ocr_len is None:
+        ocr_len = _frame_ocr_len(c["filename"])
+        c["ocr_len"] = ocr_len
+    edge, color = c.get("complexity", (None, None))
+    if edge is None:
+        edge, color = _frame_complexity(c["filename"])
+        c["complexity"] = (edge, color)
+    # 内容量 + 复杂度：信息越丰富分越高
+    return ocr_len * 0.5 + edge * 0.0005 + color * 0.1
 
 
 def dedup_candidates(cands: list[dict]) -> list[dict]:
     """候选帧去重：同一张幻灯片被讲解多帧（画面主体相同，仅字幕变化）→ 只保留一张。
 
-    保留策略：按讲解重要性降序，保留同一画面中重要性最高的帧。
+    保留策略：**本地评分**（OCR 内容量 + 画面复杂度）最高的帧，而非 DeepSeek importance。
     依据：_body_region_diff（排除字幕带）对重复帧返回 ≈0.0，对不同画面返回 0.3+。
     """
     if not cands:
@@ -132,6 +174,14 @@ def dedup_candidates(cands: list[dict]) -> list[dict]:
     cands = sorted(cands, key=lambda c: c["time"])
     kept = []
     for c in cands:
+        # 本地过滤：无信息画面（纯色/无文字）直接排除
+        if _frame_ocr_len(c["filename"]) < MIN_KEYFRAME_OCR:
+            c["reject"] = "本地规则:内容量不足"
+            continue
+        edge, _ = _frame_complexity(c["filename"])
+        if edge < MIN_EDGE_VAR:
+            c["reject"] = "本地规则:纯色/无内容"
+            continue
         if not kept:
             kept.append(c)
             continue
@@ -147,8 +197,8 @@ def dedup_candidates(cands: list[dict]) -> list[dict]:
             # 画面主体不同 → 是新幻灯片，保留
             kept.append(c)
         else:
-            # 同一张幻灯片：保留讲解重要性更高的
-            if c.get("importance", 0) > prev.get("importance", 0):
+            # 同一张幻灯片：保留本地评分更高的（内容更丰富的）
+            if _local_score(c) > _local_score(prev):
                 kept[-1] = c
     return kept
 
@@ -224,18 +274,19 @@ def guide_capture(sumz, video: Path, segments: list[dict], title: str, course: s
         )
         c["score"] = round(score, 2)
         entry["score"] = c["score"]
-        # 视觉精判：Qwen3.7-Flash 直接看图，判断是否有独立学习内容
-        #（比纯文本 OCR 判断准：能识别文件管理器/终端等无价值画面）
+        # 视觉检查：仅用于检测"画面异常"（花屏/全黑/严重遮挡），不判断内容是否重要
+        # 重要与否由本地规则（OCR内容量+复杂度+评分）决定——避免视觉API误拒有效画面
         try:
-            worthy = _get_vision().assess(c["filename"])
+            worthy = _get_vision().assess_anomaly(c["filename"])
         except Exception as e:  # noqa: BLE001
-            worthy = {"worthy": False, "reason": f"视觉判断失败: {str(e)[:40]}"}
+            worthy = {"anomaly": False, "reason": f"视觉检查失败: {str(e)[:40]}"}
         entry["visual_verdict"] = worthy["reason"][:60]
-        if not worthy["worthy"]:
-            c["reject"] = f"视觉判断不重要: {worthy['reason']}"
-            entry["decision"] = "排除:视觉判断不重要"
+        if worthy.get("anomaly"):
+            c["reject"] = f"画面异常: {worthy['reason']}"
+            entry["decision"] = "排除:画面异常"
             score_log.append(entry)
             continue
+        # 本地规则决定是否保留：评分达标即可（不依赖视觉API判断重要性）
         if score >= settings.score_threshold:
             # 文件名加视频标识前缀，避免不同视频同时间戳覆盖
             import re as _re
