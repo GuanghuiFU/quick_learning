@@ -19,11 +19,17 @@ def _safe_filename(title: str) -> str:
     return re.sub(r'[\\/:*?"<>|\s]+', "_", title.strip())[:80] or "untitled"
 
 
+def _course_dir_name(course: str) -> str:
+    """课程目录名：保留空格（macOS 允许），仅去首尾空白，去除不安全字符但不转空格。"""
+    # 保留空格，仅去除真正危险的字符（/ : * ? " < > |）
+    return re.sub(r'[\\/:*?"<>|]+', "_", course.strip())
+
+
 def _course_root(course: str | None = None) -> Path:
     """课程根目录：有 course 则 `学习笔记/<course>/`，否则 `学习笔记/`。"""
     root = settings.notes_root
     if course:
-        root = root / _safe_filename(course)
+        root = root / _course_dir_name(course)
     root.mkdir(parents=True, exist_ok=True)
     return root
 
