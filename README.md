@@ -2,7 +2,8 @@
 
 在 Chrome 浏览器看学习视频时（B 站、飞书、任意含 `<video>` 的网页），自动把视频内容变成结构化笔记存进 Obsidian。
 
-> 📖 **详细使用说明见 [USAGE.md](USAGE.md)**（含环境搭建、配置、三种使用方式、关键帧原理、调试指南）。
+> 📖 **详细使用说明见 [USAGE.md](USAGE.md)**（含环境搭建、配置、使用方式、关键帧原理、调试指南）。
+> 📋 **处理视频前，请填写 [视频处理设置模板](视频处理设置模板.md)** 中的参数。
 
 ## 功能
 
@@ -42,7 +43,9 @@ Chrome 扩展 (MV3)  ── 采集 ──▶  本地 Python 服务 (FastAPI)
 
 扩展不持有任何 API key、不写任意路径；所有密钥在服务端 `.env`。
 
-## 快速开始
+## 快速开始（代码调用模式）
+
+> 主要使用方式：通过命令行脚本处理视频 → 自动生成笔记到 Obsidian。Chrome 扩展是可选附加（见文末附注），多数场景用脚本即可。
 
 ### 1. 配置 `.env`
 
@@ -52,44 +55,30 @@ cp .env.example .env   # 然后填入你的 key
 ```
 
 需要：
-- `LLM_API_KEY` — DeepSeek（总结 + 关键帧判断用）
-- `ASR_API` — 阿里云百炼 DashScope key（语音转写 + 视觉判断用）
+- `LLM_API_KEY` — DeepSeek（总结 + 关键帧判断用）。申请：https://platform.deepseek.com/
+- `ASR_API` — 阿里云百炼 DashScope key（语音转写 + 视觉判断用）。申请：https://bailian.console.aliyun.com/
 - `VAULT_PATH` — 你的 Obsidian vault 路径
 
-### 2. 启动本地服务
+> **密钥安全**：API key 只在 `.env` 配置，不要明文写在对话或命令里。
+
+### 2. 安装依赖
 
 ```bash
 cd server
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn server.app:app --host 127.0.0.1 --port 8787
 ```
 
-需要 `ffmpeg`（音频转 16kHz WAV）：`brew install ffmpeg`
+需要 `ffmpeg`：`brew install ffmpeg`
 
-### 3. 加载 Chrome 扩展
-
-1. 打开 `chrome://extensions`
-2. 开启「开发者模式」
-3. 「加载已解压的扩展程序」→ 选择 `extension/` 目录
-4. 在扩展快捷键设置里确认：`⌘⇧E` 开始/停止学习、`⌘⇧S` 截图
-
-### 4. 使用
-
-1. 打开任意含视频的网页（B 站、飞书、通用 HTML5 视频站）
-2. 点扩展图标 → 「开始学习」（或按 `⌘⇧E`）
-3. 正常看视频，后台自动积累字幕、转写音频、检测关键画面
-4. 看到重点画面按 `⌘⇧S` 手动截图
-5. 视频播完，自动生成学习文档 → Obsidian 通知提示路径
-
-### 5. 离线处理（视频/URL → 笔记）
+### 3. 处理视频 → 笔记
 
 ```bash
+# 处理单个 URL（自动下载：yt-dlp 优先，opencli 浏览器兜底，按配置选清晰度）
+python -m server.batch_process "https://www.bilibili.com/video/BVxxx" --url --course "课程名" --mode both
+
 # 处理本地视频文件夹（可指定课程）
 python -m server.batch_process /path/to/videos --course "课程名" --mode both
-
-# 处理 URL（自动下载：yt-dlp 优先，opencli 浏览器兜底，按配置选清晰度）
-python -m server.batch_process "https://..." --url --course "课程名"
 
 # 多套课程跨课程并行处理
 python -m server.tests.process_courses --workers 6
@@ -102,7 +91,7 @@ DOWNLOAD_METHOD=auto   # auto / ytdlp / opencli
 ```
 目标清晰度不可用时**自动降级**（720→480→360），任何环境都能下载。
 
-### 6. 配置（扩展 options 页）
+### 4. 配置（扩展 options 页，可选）
 
 | 配置 | 说明 |
 |------|------|
@@ -111,6 +100,8 @@ DOWNLOAD_METHOD=auto   # auto / ytdlp / opencli
 | 总结优先级 | 字幕为主 / 语音为主 / 两者并重 |
 | 文档类型 | 速览 / 完整笔记 / 两者都要 |
 | 自动截取幻灯片 | 讲 PPT 时开，画面大幅变化自动截图 |
+
+> **附注（Chrome 扩展）**：若需在浏览器中边看视频边自动积累字幕/截图，可加载 `extension/` 扩展（`chrome://extensions` → 开发者模式 → 加载已解压的扩展程序）。此模式为可选附加，核心功能均可通过脚本完成。
 
 ## 测试
 
