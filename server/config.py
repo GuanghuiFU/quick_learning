@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     ocr_subtitle_y0: float = 0.74
     ocr_subtitle_y1: float = 0.98
 
+    # ---- 视频下载配置 ----
+    download_quality: str = "720"    # 下载清晰度 360/480/720/1080，.env: DOWNLOAD_QUALITY
+    download_method: str = "auto"    # 下载方式 auto/ytdlp/opencli，.env: DOWNLOAD_METHOD
+
     # ---- 截图中间产物目录（test/screenshots，供检查） ----
     screenshots_dir: str = "test/screenshots"
 

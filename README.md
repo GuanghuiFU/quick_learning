@@ -88,12 +88,19 @@ uvicorn server.app:app --host 127.0.0.1 --port 8787
 # 处理本地视频文件夹（可指定课程）
 python -m server.batch_process /path/to/videos --course "课程名" --mode both
 
-# 处理 URL（自动下载：yt-dlp 优先，opencli 浏览器兜底）
+# 处理 URL（自动下载：yt-dlp 优先，opencli 浏览器兜底，按配置选清晰度）
 python -m server.batch_process "https://..." --url --course "课程名"
 
 # 多套课程跨课程并行处理
 python -m server.tests.process_courses --workers 6
 ```
+
+**下载清晰度配置**（`.env`）：
+```ini
+DOWNLOAD_QUALITY=720   # 360 / 480 / 720 / 1080（B站会员可下高清）
+DOWNLOAD_METHOD=auto   # auto / ytdlp / opencli
+```
+目标清晰度不可用时**自动降级**（720→480→360），任何环境都能下载。
 
 ### 6. 配置（扩展 options 页）
 

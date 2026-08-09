@@ -253,9 +253,11 @@ async def main() -> None:
     ap.add_argument("--mode", default="both", choices=["note", "speedread", "both"])
     ap.add_argument("--course", default=None, help="课程名：笔记写入 学习笔记/<course>/ 子文件夹")
     ap.add_argument("--url", action="store_true", help="input 是视频 URL，先下载再处理")
-    ap.add_argument("--dl-method", default="auto", choices=["auto", "ytdlp", "opencli"],
+    ap.add_argument("--dl-method", default=settings.download_method,
+                    choices=["auto", "ytdlp", "opencli"],
                     help="下载方式：auto(先yt-dlp后opencli浏览器) | ytdlp | opencli")
-    ap.add_argument("--dl-quality", default="360", help="下载清晰度（如 360/480/720/1080）")
+    ap.add_argument("--dl-quality", default=settings.download_quality,
+                    help="下载清晰度（如 360/480/720/1080）")
     args = ap.parse_args()
 
     # 如果 input 是 URL 或指定了 --url，先下载

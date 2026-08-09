@@ -11,6 +11,27 @@ import shutil
 import subprocess
 from pathlib import Path
 
+# B 站 format ID 与分辨率（H264 编码）固定对应
+_QUALITY_FORMAT = {
+    "360": "30016",
+    "480": "30032",
+    "720": "30064",
+    "1080": "30080",
+}
+
+# 降级顺序：从目标质量降到 360
+_DEGRADE_ORDER = ["1080", "720", "480", "360"]
+
+
+def _format_id_for(quality: str) -> str:
+    """按清晰度返回 B 站 H264 视频 format ID。"""
+    return _QUALITY_FORMAT.get(quality, "30016")
+
+
+def _audio_id_for(video_id: str) -> str:
+    """视频 format ID 对应音频 ID（30016→30216）。"""
+    return video_id.replace("300", "302")
+
 
 def _find_ytdlp() -> str:
     """找 yt-dlp：先 PATH，再项目 venv。"""
@@ -49,17 +70,20 @@ def download_ytdlp(url: str, out_dir: Path, quality: str = "360") -> Path | None
 
 
 def download_playlist_ytdlp(url: str, out_dir: Path, quality: str = "360") -> list[Path]:
-    """用 yt-dlp 下载整个播放列表。多格式策略依次尝试，返回下载的视频列表。"""
+    """用 yt-dlp 下载整个播放列表。按清晰度动态选格式，多格式策略依次尝试。"""
     yt = _find_ytdlp()
     out_dir.mkdir(parents=True, exist_ok=True)
-    # 依次尝试的格式选择（B 站不同视频格式 ID 可能不同）
-    format_specs = [
-        "30016+30216",  # B站 360p H264 + 音频（通用，最稳）
-        f"bv*[height<={quality}][vcodec^=avc1]+ba/bv*[height<={quality}]+ba/b",  # H264 通用
-        "30032+30232",  # B站 480p H264 + 音频
-        "b",            # 默认最佳
-    ]
-    # 输出名：先简单 NN_pNN（避免含课程全名导致过长/重复），后续由 _rename_with_theme 生成清晰主题名
+    # 按目标清晰度选 B 站 format ID，从目标质量到最低逐级尝试
+    format_specs = []
+    for q in _DEGRADE_ORDER[_DEGRADE_ORDER.index(quality):]:  # 从 quality 开始
+        vid_id = _format_id_for(q)
+        aud_id = _audio_id_for(vid_id)
+        format_specs.append(f"{vid_id}+{aud_id}")
+    # 追加通用回退（任意编码）和默认最佳
+    format_specs.append(f"bv*[height<={quality}][vcodec^=avc1]+ba/bv*[height<={quality}]+ba/b")
+    format_specs.append(f"bv*[height<={quality}]+ba/b")
+    format_specs.append("b")
+    # 输出名：先简单 NN_pNN，后续由 _rename_with_theme 生成清晰主题名
     out_tpl = str(out_dir / "%(playlist_index)02d_p%(playlist_index)02d.%(ext)s")
     for fmt in format_specs:
         cmd = [
@@ -175,18 +199,25 @@ def _extract_title(url: str) -> str:
 
 def download_video(url: str, out_dir: Path, quality: str = "360",
                    method: str = "auto") -> Path | None:
-    """下载视频。method: auto(先yt-dlp后opencli) | ytdlp | opencli。"""
+    """下载视频。method: auto(先yt-dlp后opencli) | ytdlp | opencli。
+
+    自动降级：目标质量失败时依次降到 720/480/360，保证任何环境都能下载。
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
-    if method in ("auto", "ytdlp"):
-        print(f"  [尝试 yt-dlp 下载] {url}")
-        p = download_ytdlp(url, out_dir, quality)
-        if p:
-            return p
-        if method == "ytdlp":
-            return None
-    if method in ("auto", "opencli"):
-        print(f"  [yt-dlp 失败，尝试 opencli 浏览器下载] {url}")
-        p = download_opencli(url, out_dir, quality)
-        if p:
-            return p
+    # 从目标质量到 360 逐级尝试
+    qs = _DEGRADE_ORDER[_DEGRADE_ORDER.index(quality):]
+    for q in qs:
+        if method in ("auto", "ytdlp"):
+            print(f"  [尝试 yt-dlp 下载 {q}] {url}")
+            p = download_ytdlp(url, out_dir, q)
+            if p:
+                return p
+            if method == "ytdlp":
+                continue
+        if method in ("auto", "opencli"):
+            print(f"  [yt-dlp 失败({q})，尝试 opencli 浏览器下载] {url}")
+            p = download_opencli(url, out_dir, q)
+            if p:
+                return p
+    print(f"  [下载失败] 所有清晰度({qs})均不可用")
     return None

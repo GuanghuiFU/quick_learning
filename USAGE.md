@@ -221,12 +221,25 @@ python -m server.tests.process_courses --workers 6
 
 ## 8. 视频下载
 
-支持两种下载方式，**yt-dlp 优先，失败自动用 opencli 浏览器兜底**：
+支持两种下载方式，**yt-dlp 优先，失败自动用 opencli 浏览器兜底**，且**按配置选择清晰度、自动降级**。
+
+### 清晰度配置
+
+在 `.env` 配置（或命令行 `--dl-quality` / `--dl-method` 覆盖）：
+
+```ini
+# .env
+DOWNLOAD_QUALITY=720   # 360 / 480 / 720 / 1080
+DOWNLOAD_METHOD=auto   # auto / ytdlp / opencli
+```
+
+- **高清下载**：B 站 format ID 按清晰度动态选择（360→30016, 480→30032, 720→30064, 1080→30080）。**登录 B 站会员后，yt-dlp（带浏览器 cookie）或 opencli（复用 Chrome 登录态）都能下 720p/1080p**。
+- **自动降级**：目标清晰度不可用（非会员/源站限制）时，自动降到 720 → 480 → 360，保证任何环境都能下载成功。
 
 ### yt-dlp（默认）
 - 通用下载，支持多站点
 - 优先选 H264 编码（兼容 ffmpeg 4.2 无 AV1 解码器）
-- 格式尝试顺序：`30016+30216` → H264 通用 → 480p → 默认
+- 按 `DOWNLOAD_QUALITY` 选清晰度，失败逐级降级
 
 ### opencli 浏览器（兜底）
 - 通过浏览器桥接复用你已登录的 Chrome 会话
