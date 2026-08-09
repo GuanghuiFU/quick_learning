@@ -304,6 +304,60 @@ class DeepSeekSummarizer:
 只输出翻译后的中文。"""
         return self._chat(prompt, system="你是专业的英文技术视频翻译，翻译准确通顺。")
 
+    def evaluate_subtitle(self, subtitle_text: str) -> float:
+        """评价字幕内容合理性（语义通顺、语法正确、无乱码），返回 0-1 分。"""
+        if not subtitle_text.strip():
+            return 0.0
+        prompt = f"""评价下面这段视频字幕的内容质量。判断它是否语义通顺、语法正确、无乱码、无重复错位。
+
+评分标准：
+- 语义通顺、语法正确、表达合理 → 0.8~1.0
+- 基本可读但有小瑕疵（个别错字）→ 0.6~0.8
+- 明显错乱（乱码/重复/错位/与内容无关）→ 0.0~0.5
+
+=== 字幕文本 ===
+{subtitle_text[:2000]}
+
+只返回一个 0~1 的数字（如 0.9），不要任何其他文字。"""
+        try:
+            resp = self._chat(prompt, system="你只返回 0~1 的数字。").strip()
+            import re
+
+            m = re.search(r"0?\.\d+|1\.0?|[01]", resp)
+            return max(0.0, min(1.0, float(m.group(0)))) if m else 0.0
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    def evaluate_subtitle_consistency(self, subtitle_text: str, asr_text: str) -> float:
+        """判断字幕与语音转写是否表达同一内容（语义一致性），返回 0-1 分。
+
+        比字符匹配鲁棒：能处理字幕语言≠语音语言（如英文讲解+中文字幕）。
+        """
+        if not subtitle_text.strip() or not asr_text.strip():
+            return 0.0
+        prompt = f"""判断视频字幕和语音识别文本是否表达同一内容（语义一致性）。
+
+评分标准：
+- 字幕与语音表达相同内容（即使语言不同，如中文字幕对应英文语音）→ 0.8~1.0
+- 大部分一致但部分偏差 → 0.5~0.8
+- 明显不一致（字幕与语音内容无关/串行）→ 0.0~0.5
+
+=== 字幕文本 ===
+{subtitle_text[:1500]}
+
+=== 语音识别文本 ===
+{asr_text[:1500]}
+
+只返回一个 0~1 的数字（如 0.9），不要任何其他文字。"""
+        try:
+            resp = self._chat(prompt, system="你只返回 0~1 的数字。").strip()
+            import re
+
+            m = re.search(r"0?\.\d+|1\.0?|[01]", resp)
+            return max(0.0, min(1.0, float(m.group(0)))) if m else 0.0
+        except Exception:  # noqa: BLE001
+            return 0.0
+
     def summarize_chinese(
         self,
         title: str,

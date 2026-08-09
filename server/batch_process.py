@@ -193,23 +193,26 @@ async def process_one(summarizer, stt, video: Path, priority: str, mode: str, co
         writer.save_transcript(title, f"local:{video}", speech, segments=segments, course=course)
         print(f"[文字稿已保存] {title}_文字稿.md")
 
-    # 2) 字幕 OCR（帧采样 + 字幕带识别）——PaddleOCR 偶发死锁，用超时保护
-    import concurrent.futures as _cf
+    # 2) 字幕解析（智能来源链）：B站CC → B站AI(长视频+校验) → ASR → OCR(可选)
+    from server.subtitle import resolve_subtitle
+    from server import task_db as _db
 
-    subtitle = ""
-    try:
-        with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
-            _fut = _pool.submit(extract_subtitles_and_slides, video)
-            try:
-                subtitle, _ = _fut.result(timeout=600)  # 10分钟超时
-            except _cf.TimeoutError:
-                print("  [字幕 OCR 超时，跳过字幕]")
-                _fut.cancel()
-                subtitle = ""
-    except Exception as e:  # noqa: BLE001
-        print(f"  [字幕 OCR 失败，跳过]: {str(e)[:60]}")
-        subtitle = ""
-    print(f"[字幕] {len([l for l in subtitle.splitlines() if l.strip()])} 条")
+    source_url = f"local:{video}" if not (video.name and video.name.startswith(("http", "BV"))) else ""
+    # 实际 URL 来源：batch_process 主要处理本地视频，B 站 URL 需在下载阶段保留
+    # 这里用视频名近似判断（若是 B 站下载的，文件名含 BV 号）
+    bili_url = f"https://www.bilibili.com/video/{video.stem.split('_')[0]}" if video.stem.startswith("BV") else ""
+
+    sub_result = resolve_subtitle(
+        source_url=bili_url or source_url,
+        video=video,
+        speech=speech,
+        config=settings,
+        deepseek=summarizer,
+        stt=stt,
+        db=_db,
+    )
+    subtitle = sub_result["text"]
+    print(f"[字幕] {len([l for l in subtitle.splitlines() if l.strip()])} 条 (来源: {sub_result['source']})")
 
     # 3) 文字指引版关键帧检测（讲解预筛 → 稳定候选 → 信息量精判）
     if segments:

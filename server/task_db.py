@@ -32,8 +32,53 @@ def _conn() -> sqlite3.Connection:
             updated_at TEXT DEFAULT (datetime('now', 'localtime'))
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS subtitle_quality (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,          -- bili_ai / yt_ai / bili_cc
+            video_url TEXT,
+            sentence TEXT,                 -- 被审查的字幕句子
+            consistency_score REAL,        -- ASR 一致性得分 0-1
+            rationality_score REAL,        -- DeepSeek 合理性得分 0-1
+            accepted INTEGER,              -- 1 接受 / 0 拒绝
+            verified_at TEXT DEFAULT (datetime('now','localtime'))
+        )
+    """)
     conn.commit()
     return conn
+
+
+def record_subtitle_quality(source: str, video_url: str, sentence: str,
+                            consistency: float, rationality: float, accepted: bool) -> None:
+    """记录一句字幕的质量审查结果（以句子为单位统计）。"""
+    conn = _conn()
+    conn.execute(
+        "INSERT INTO subtitle_quality (source, video_url, sentence, consistency_score, rationality_score, accepted) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (source, video_url, sentence, consistency, rationality, int(accepted)),
+    )
+    conn.commit()
+    conn.close()
+
+
+def subtitle_acceptance_rate(source: str, window: int = 200) -> float:
+    """某字幕来源的历史合格率（近 window 条）。"""
+    conn = _conn()
+    row = conn.execute(
+        "SELECT COUNT(*) AS total, SUM(accepted) AS accepted FROM "
+        "(SELECT * FROM subtitle_quality WHERE source=? ORDER BY id DESC LIMIT ?)",
+        (source, window),
+    ).fetchone()
+    conn.close()
+    total = row["total"] or 0
+    if total == 0:
+        return 0.0
+    return (row["accepted"] or 0) / total
+
+
+def subtitle_should_trust(source: str, threshold: float = 0.95) -> bool:
+    """该来源字幕是否可信任（合格率 > threshold → 大规模采用）。"""
+    return subtitle_acceptance_rate(source) >= threshold
 
 
 def get_episode(course: str, video_path: str) -> dict | None:

@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     download_quality: str = "720"    # 下载清晰度 360/480/720/1080，.env: DOWNLOAD_QUALITY
     download_method: str = "auto"    # 下载方式 auto/ytdlp/opencli，.env: DOWNLOAD_METHOD
 
+    # ---- 字幕策略配置 ----
+    subtitle_source: str = "auto"            # auto(智能链) | bili | asr | ocr | off
+    subtitle_ai_min_sec: int = 900           # 长视频阈值（秒），>15min 才考虑 AI 字幕
+    subtitle_verify: bool = True             # 双维度校验 AI 字幕质量
+    subtitle_trust_threshold: float = 0.95   # 合格率阈值，>95% 大规模采用 AI 字幕
+
     # ---- 截图中间产物目录（assets/screenshots，供检查） ----
     screenshots_dir: str = "assets/screenshots"
 
