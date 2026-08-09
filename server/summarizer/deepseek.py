@@ -68,10 +68,26 @@ class DeepSeekSummarizer:
             ],
             "temperature": 0.3,
         }
-        resp = httpx.post(url, json=payload, headers=headers, timeout=300)
-        resp.raise_for_status()
-        data = resp.json()
-        return data["choices"][0]["message"]["content"].strip()
+        # 超时 + 重试（避免 API 请求挂起导致处理停滞）
+        import time as _time
+
+        last_err = None
+        for attempt in range(3):
+            try:
+                resp = httpx.post(url, json=payload, headers=headers, timeout=90)
+                if resp.status_code == 429:
+                    _time.sleep(5 * (attempt + 1))
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                return data["choices"][0]["message"]["content"].strip()
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                if attempt < 2:
+                    _time.sleep(3 * (attempt + 1))
+                else:
+                    raise RuntimeError(f"DeepSeek 调用失败(3次): {last_err}") from last_err
+        raise RuntimeError(f"DeepSeek 调用失败: {last_err}")
 
     def speedread(
         self,
