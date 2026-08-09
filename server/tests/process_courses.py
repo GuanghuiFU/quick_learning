@@ -148,10 +148,11 @@ def gen_course_summary(course: dict, workers: int = 1) -> None:
         return
     print(f"[课程总结] {course_title}：基于 {len(episodes)} 集速览")
     sumz = DeepSeekSummarizer(st.llm_api_key, st.llm_model, st.llm_base_url)
-    body = sumz.course_summary(course_title, course["url"], episodes)
+    url = course.get("url", "")
+    body = sumz.course_summary(course_title, url, episodes)
     from server.notes import writer
 
-    writer.save_course_summary(course_title, course["url"], body, course=course_title)
+    writer.save_course_summary(course_title, url, body, course=course_title)
     print(f"[课程整体总结已生成] {course_title}")
 
 
