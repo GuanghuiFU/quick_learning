@@ -47,14 +47,14 @@ class QwenVision:
     def _upload_get_url(self, image_path: Path) -> str:
         with image_path.open("rb") as f:
             files = {"file": (image_path.name, f, "image/jpeg")}
-            resp = httpx.post(UPLOAD_URL, headers=self._headers(), files=files, timeout=120)
+            resp = httpx.post(UPLOAD_URL, headers=self._headers(), files=files, timeout=60)
         resp.raise_for_status()
         data = resp.json().get("data", {})
         uploaded = (data.get("uploaded_files") or [{}])[0]
         file_id = uploaded.get("file_id")
         if not file_id:
             raise RuntimeError(f"上传失败: {resp.text[:300]}")
-        info = httpx.get(f"{UPLOAD_URL}/{file_id}", headers=self._headers(), timeout=60)
+        info = httpx.get(f"{UPLOAD_URL}/{file_id}", headers=self._headers(), timeout=30)
         info.raise_for_status()
         return info.json()["data"]["url"]
 
@@ -78,9 +78,32 @@ class QwenVision:
                 ]
             },
         }
-        resp = httpx.post(GEN_URL, json=payload, headers=self._headers(with_content=True), timeout=180)
-        resp.raise_for_status()
-        data = resp.json()
+        # 超时 + 重试（避免 API 偶发卡死/限流导致处理停滞）
+        last_err = None
+        for attempt in range(3):
+            try:
+                resp = httpx.post(
+                    GEN_URL, json=payload, headers=self._headers(with_content=True),
+                    timeout=90,
+                )
+                if resp.status_code == 429:
+                    import time
+
+                    time.sleep(5 * (attempt + 1))
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                break
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                if attempt < 2:
+                    import time
+
+                    time.sleep(3 * (attempt + 1))
+                else:
+                    return {"worthy": False, "reason": f"视觉API调用失败: {str(e)[:60]}"}
+        else:
+            return {"worthy": False, "reason": f"视觉API失败: {last_err}"}
         try:
             text = data["output"]["choices"][0]["message"]["content"][0]["text"]
         except (KeyError, IndexError, TypeError):
