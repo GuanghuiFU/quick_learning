@@ -121,7 +121,7 @@ def guide_capture(sumz, video: Path, segments: list[dict], title: str, course: s
 
     course: 课程名，关键图附件写入 学习笔记/<course>/attachments/（默认用 title）。
     """
-    out_root = Path("test/screenshots") / (course or title) / title / "guide"
+    out_root = Path("assets/screenshots") / (course or title) / title / "guide"
     cand_dir = out_root / "candidates"
     sel_dir = out_root / "selected"
     for d in (cand_dir, sel_dir):

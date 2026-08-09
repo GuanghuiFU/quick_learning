@@ -46,7 +46,7 @@ def download_course(course: dict) -> list[Path]:
 
     name = course["name"]
     url = course["url"]
-    dl_dir = Path("test/videos") / name
+    dl_dir = Path("assets/videos") / name
     dl_dir.mkdir(parents=True, exist_ok=True)
 
     # 已有 NN-主题 命名的视频（之前处理过）→ 跳过下载

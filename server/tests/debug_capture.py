@@ -1,4 +1,4 @@
-"""诊断脚本：完整截图流程，所有中间产物保存到 test/screenshots/<title>/debug/。
+"""诊断脚本：完整截图流程，所有中间产物保存到 assets/screenshots/<title>/debug/。
 
 保存内容：
 - 每帧截图 candidates/
@@ -24,11 +24,11 @@ from server.tests.test_resume import read_transcript  # noqa: E402
 
 
 def main() -> None:
-    video = Path("test/videos/飞书AI.mp4")
+    video = Path("assets/videos/飞书AI.mp4")
     transcript_md = Path("/Users/fuguanghui/Documents/Obsidian Vault/学习笔记/2026-08-08_飞书AI_文字稿.md")
     title, speech, segments = read_transcript(transcript_md)
 
-    out = Path("test/screenshots") / title / "debug"
+    out = Path("assets/screenshots") / title / "debug"
     cand_dir = out / "candidates"
     sel_dir = out / "selected"
     for d in (cand_dir, sel_dir):

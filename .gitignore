@@ -5,14 +5,14 @@ __pycache__/
 .DS_Store
 
 # 测试媒体文件（体积大，不提交）
-test/videos/*.mp4
-test/videos/*.webm
-test/videos/*.mkv
-test/videos/*.mov
-test/videos/*.m4a
-test/videos/*.wav
+assets/videos/*.mp4
+assets/videos/*.webm
+assets/videos/*.mkv
+assets/videos/*.mov
+assets/videos/*.m4a
+assets/videos/*.wav
 
 # 截图中间产物
-test/screenshots/
+assets/screenshots/
 .env
 task_state.db

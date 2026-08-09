@@ -265,7 +265,7 @@ async def main() -> None:
     if args.url or str(args.input).startswith(("http://", "https://")):
         from server.downloader import download_video
 
-        dl_dir = Path("test/videos") / "downloads"
+        dl_dir = Path("assets/videos") / "downloads"
         print(f"[下载] {args.input} (方式: {args.dl_method}, 清晰度: {args.dl_quality})")
         p = download_video(str(args.input), dl_dir, quality=args.dl_quality, method=args.dl_method)
         if not p:

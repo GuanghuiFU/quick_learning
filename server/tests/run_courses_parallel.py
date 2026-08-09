@@ -31,7 +31,7 @@ def run_course_worker(course: dict, log_file: Path | None = None) -> None:
 
     name = course["name"]
     course_title = course["course_title"]
-    dl_dir = P("test/videos") / name
+    dl_dir = P("assets/videos") / name
 
     # 下载（若未下载）
     vids = sorted(dl_dir.glob("*.mp4"))

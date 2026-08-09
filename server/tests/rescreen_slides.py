@@ -1,7 +1,7 @@
 """对已选关键图再筛一遍（应用信息量过滤），重建 Obsidian 文档。
 
 用法：python -m server.tests.rescreen_slides
-从 test/screenshots/飞书AI/guide/selected/ 读取已选图，
+从 assets/screenshots/飞书AI/guide/selected/ 读取已选图，
 用 assess_frame_worthiness 过滤，保留信息量足的，重建速览+笔记。
 """
 from __future__ import annotations
@@ -19,9 +19,9 @@ from server.tests.test_resume import read_transcript  # noqa: E402
 
 def main() -> None:
     title = "飞书AI"
-    video = Path("test/videos/飞书AI.mp4")
+    video = Path("assets/videos/飞书AI.mp4")
     transcript_md = Path("/Users/fuguanghui/Documents/Obsidian Vault/学习笔记/2026-08-08_飞书AI_文字稿.md")
-    sel_dir = Path("test/screenshots") / title / "guide" / "selected"
+    sel_dir = Path("assets/screenshots") / title / "guide" / "selected"
     att_dir = Path(settings.vault_path) / settings.attachments_dir
 
     if not sel_dir.exists():

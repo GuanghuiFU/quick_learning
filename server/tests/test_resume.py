@@ -1,6 +1,6 @@
 """跳过转写，复用已有时间戳文字稿，处理视频剩余步骤（字幕OCR + 关键画面截图 + 文档）。
 
-改进：按文字稿时间戳在每句讲解处采样帧 → 主体区变化检测 → 评分 → 存 test/screenshots。
+改进：按文字稿时间戳在每句讲解处采样帧 → 主体区变化检测 → 评分 → 存 assets/screenshots。
 """
 from __future__ import annotations
 

@@ -23,7 +23,7 @@ def main() -> None:
     ap.add_argument("--seconds", type=int, default=0, help="只处理前 N 秒；0=全部")
     args = ap.parse_args()
     seconds = args.seconds
-    video = Path("test/videos/飞书AI.mp4")
+    video = Path("assets/videos/飞书AI.mp4")
     transcript_md = Path("/Users/fuguanghui/Documents/Obsidian Vault/学习笔记/2026-08-08_飞书AI_文字稿.md")
     title, speech, segments = read_transcript(transcript_md)
 

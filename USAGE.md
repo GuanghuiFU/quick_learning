@@ -275,7 +275,7 @@ python -m server.batch_process "https://..." --url --dl-method opencli --dl-qual
 
 **中间产物**（便于溯源）：
 ```
-test/screenshots/<课程>/<视频>/guide/
+assets/screenshots/<课程>/<视频>/guide/
 ├── candidates/   采样候选帧（按时间戳）
 ├── selected/     判定为关键的画面
 └── scores.csv    每帧评分明细（含视觉判断结论、排除原因）
@@ -360,12 +360,12 @@ python -m server.tests.process_courses --workers 3  # 跨课程并行处理
 ```
 
 **调试建议**：
-- 关键图不全 → 看 `test/screenshots/<课程>/<视频>/guide/scores.csv` 的排除原因
+- 关键图不全 → 看 `assets/screenshots/<课程>/<视频>/guide/scores.csv` 的排除原因
 - 配图质量差 → 调 `SCORE_THRESHOLD`（默认 0.5）
 - 想用云端 OCR → `.env` 设 `OCR_ENGINE=qwen-vl`
 - 字幕带位置不对 → 调 `OCR_SUBTITLE_Y0/Y1`
 
-**测试数据约定**：测试视频放 `test/videos/`（gitignore，不提交）；中间产物放 `test/screenshots/`。
+**测试数据约定**：测试视频放 `assets/videos/`（gitignore，不提交）；中间产物放 `assets/screenshots/`。
 
 ---
 
