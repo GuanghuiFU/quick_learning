@@ -160,10 +160,13 @@ async def process_one(summarizer, stt, video: Path, priority: str, mode: str, co
     # 登记到状态数据库
     task_db.register_episode(course_key, str(video))
 
-    # 断点续传：数据库记录已完成则跳过整集（避免重复消耗 API）
-    if mode in ("note", "both") and task_db.is_episode_done(course_key, str(video), "notes"):
-        print(f"  [跳过] {title} 已处理过（数据库记录 notes_done）")
-        return
+    # 断点续传：数据库记录 或 完整版文件存在 → 跳过（兼容无 DB 历史数据）
+    if mode in ("note", "both"):
+        db_done = task_db.is_episode_done(course_key, str(video), "notes")
+        file_done = (writer._note_dir(course) / f"{writer._safe_filename(title)}.md").exists()
+        if db_done or file_done:
+            print(f"  [跳过] {title} 已处理过（{'数据库' if db_done else '完整版文件存在'}）")
+            return
 
     # 1) 语音转写（返回全文 + 带时间戳分句）
     speech, segments = await transcribe_video(stt, video)
