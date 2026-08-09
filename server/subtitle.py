@@ -103,11 +103,12 @@ def srt_to_text(srt: str) -> str:
 # ---------- 双维度质量校验 ----------
 
 def verify_subtitle_quality(source: str, url: str, ai_sub: str, stt, video: Path,
-                            deepseek, db, sample_sec: int = 30) -> bool:
+                            deepseek, db, sample_sec: int = 30, threshold: float = 0.85) -> bool:
     """双维度校验 AI 字幕质量，结果逐句入库。返回 True(可用)/False(回退ASR)。
 
     维度1 一致性：AI字幕片段 vs ASR 转写（ASR 也可能错，所以还需维度2）
     维度2 合理性：DeepSeek 独立判断字幕内容通顺（不看 ASR）
+    threshold: 两个维度都需达到的合格线（默认 0.85，严格；可配置）
     """
     import subprocess as sp
 
@@ -134,7 +135,7 @@ def verify_subtitle_quality(source: str, url: str, ai_sub: str, stt, video: Path
     r = deepseek.evaluate_subtitle(ai_sample)
 
     # 逐句入库（以句子为单位统计）
-    accepted = c >= 0.7 and r >= 0.7
+    accepted = c >= threshold and r >= threshold
     for sentence in ai_lines[:10]:
         db.record_subtitle_quality(source, url, sentence, c, r, accepted)
     return accepted
@@ -227,7 +228,8 @@ def resolve_subtitle(source_url: str, video: Path, speech: str, config, deepseek
                 # 否则双维度校验
                 if config.subtitle_verify:
                     ok = verify_subtitle_quality(ai_source, source_url, ai_text, stt, video,
-                                                 deepseek, db)
+                                                 deepseek, db,
+                                                 threshold=config.subtitle_verify_threshold)
                     if ok:
                         return {"text": ai_text, "source": ai_source, "verified": True}
                     print("  [AI字幕校验未通过，回退ASR]")

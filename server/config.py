@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     subtitle_source: str = "auto"            # auto(智能链) | bili | asr | ocr | off
     subtitle_ai_min_sec: int = 900           # 长视频阈值（秒），>15min 才考虑 AI 字幕
     subtitle_verify: bool = True             # 双维度校验 AI 字幕质量
+    subtitle_verify_threshold: float = 0.85  # 双维度合格线（一致性+合理性都需≥此值）
     subtitle_trust_threshold: float = 0.95   # 合格率阈值，>95% 大规模采用 AI 字幕
 
     # ---- 截图中间产物目录（assets/screenshots，供检查） ----
