@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "视频学习助手",
+  "version": "0.1.0",
+  "description": "B站视频学习：OCR提取字幕、截图记重点、结束自动生成笔记到Obsidian",
+  "permissions": ["activeTab", "tabCapture", "offscreen", "storage", "notifications", "scripting"],
+  "host_permissions": ["<all_urls>", "http://127.0.0.1/*", "http://localhost/*"],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "视频学习助手"
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content-script.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "commands": {
+    "toggle-capture": {
+      "suggested_key": { "mac": "Command+Shift+E" },
+      "description": "开始/停止学习"
+    },
+    "capture-screenshot": {
+      "suggested_key": { "mac": "Command+Shift+S" },
+      "description": "截取当前画面"
+    }
+  }
+}

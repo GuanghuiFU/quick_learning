@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { width: 360px; font-family: -apple-system, sans-serif; padding: 16px; }
+    label { display: block; margin: 10px 0 4px; font-size: 13px; }
+    input, select { width: 100%; padding: 6px; box-sizing: border-box; }
+    .hint { font-size: 11px; color: #888; margin-top: 2px; }
+    button { margin-top: 14px; padding: 8px 16px; background: #00a1d6; color: white;
+             border: none; border-radius: 6px; cursor: pointer; }
+    #msg { color: #00a1d6; margin-top: 8px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h3>视频学习助手设置</h3>
+  <label>本地服务地址</label>
+  <input id="serverUrl" placeholder="http://127.0.0.1:8787">
+  <label>帧检测间隔（秒）</label>
+  <input id="ocrInterval" type="number" min="1" max="10">
+
+  <label>字幕通道（OCR 截屏识别）</label>
+  <select id="enableOcr">
+    <option value="true">启用</option>
+    <option value="false">停用</option>
+  </select>
+  <div class="hint">适合有字幕的视频（B 站、多数课程）</div>
+
+  <label>语音通道（音频转文字）</label>
+  <select id="enableStt">
+    <option value="true">启用</option>
+    <option value="false">停用</option>
+  </select>
+  <div class="hint">适合无字幕的视频（飞书、会议录制），后台分段转写</div>
+
+  <label>总结时素材优先级</label>
+  <select id="priority">
+    <option value="ocr">字幕 OCR 为主</option>
+    <option value="stt">语音转写为主</option>
+    <option value="both">两者并重</option>
+  </select>
+
+  <label>生成文档类型</label>
+  <select id="noteMode">
+    <option value="speedread">仅速览（图文并茂要点）</option>
+    <option value="note">仅完整笔记</option>
+    <option value="both">速览 + 完整笔记</option>
+  </select>
+
+  <label>自动截取幻灯片（画面变化检测）</label>
+  <select id="captureSlides">
+    <option value="true">启用</option>
+    <option value="false">停用</option>
+  </select>
+  <div class="hint">检测到画面大幅变化自动截图（讲 PPT 时很有用）</div>
+
+  <button id="save">保存</button>
+  <div id="msg"></div>
+  <script src="options.js"></script>
+</body>
+</html>

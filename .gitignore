@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+
+# 测试媒体文件（体积大，不提交）
+test/videos/*.mp4
+test/videos/*.webm
+test/videos/*.mkv
+test/videos/*.mov
+test/videos/*.m4a
+test/videos/*.wav
+
+# 截图中间产物
+test/screenshots/
+.env

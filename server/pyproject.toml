@@ -1,0 +1,22 @@
+[project]
+name = "video-learning-assistant"
+version = "0.1.0"
+description = "B站视频学习助手：OCR 字幕 + ASR 转写 + DeepSeek 总结 + Obsidian 笔记"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "httpx>=0.27",
+    "python-multipart>=0.0.9",
+    "pillow>=10.0",
+]
+
+[project.optional-dependencies]
+ocr-paddle = ["paddlepaddle>=3.0", "paddleocr>=2.7"]
+ocr-vision = ["pyobjc-framework-Vision", "pyobjc-framework-Quartz"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["server/tests"]

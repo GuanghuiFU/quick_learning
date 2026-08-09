@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { width: 300px; font-family: -apple-system, sans-serif; padding: 12px; }
+    h1 { font-size: 16px; margin: 0 0 8px; }
+    button { display: block; width: 100%; padding: 8px; margin: 6px 0;
+             font-size: 14px; border: none; border-radius: 6px; cursor: pointer; }
+    #toggleBtn { background: #00a1d6; color: white; }
+    #toggleBtn.active { background: #e53935; }
+    #shotBtn { background: #f5f5f5; }
+    .status { font-size: 12px; color: #666; margin-top: 8px; }
+    .title { font-size: 12px; color: #333; margin-top: 6px; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <h1>📚 视频学习助手</h1>
+  <button id="toggleBtn">开始学习</button>
+  <button id="shotBtn">📷 截图（⌘⇧S）</button>
+  <div class="status" id="status">未在学习</div>
+  <div class="title" id="title"></div>
+  <script src="popup.js"></script>
+</body>
+</html>
