@@ -116,6 +116,43 @@ def sample_candidates(video: Path, segments: list[dict], out_dir: Path, fps: flo
     return cands
 
 
+# 去重阈值：画面主体差异低于此值视为同一张幻灯片（只有字幕变化）
+DEDUP_DIFF = 0.05
+
+
+def dedup_candidates(cands: list[dict]) -> list[dict]:
+    """候选帧去重：同一张幻灯片被讲解多帧（画面主体相同，仅字幕变化）→ 只保留一张。
+
+    保留策略：按讲解重要性降序，保留同一画面中重要性最高的帧。
+    依据：_body_region_diff（排除字幕带）对重复帧返回 ≈0.0，对不同画面返回 0.3+。
+    """
+    if not cands:
+        return cands
+    # 按时间排序
+    cands = sorted(cands, key=lambda c: c["time"])
+    kept = []
+    for c in cands:
+        if not kept:
+            kept.append(c)
+            continue
+        # 与最近保留的候选帧比较画面主体差异
+        prev = kept[-1]
+        try:
+            img_cur = Image.open(c["filename"]).convert("RGB").resize((160, 90))
+            img_prev = Image.open(prev["filename"]).convert("RGB").resize((160, 90))
+            diff = _body_region_diff(img_cur, np.asarray(img_prev, dtype=np.int16))
+        except Exception:  # noqa: BLE001
+            diff = None
+        if diff is None or diff >= DEDUP_DIFF:
+            # 画面主体不同 → 是新幻灯片，保留
+            kept.append(c)
+        else:
+            # 同一张幻灯片：保留讲解重要性更高的
+            if c.get("importance", 0) > prev.get("importance", 0):
+                kept[-1] = c
+    return kept
+
+
 def guide_capture(sumz, video: Path, segments: list[dict], title: str, course: str | None = None) -> list[dict]:
     """完整文字指引关键帧检测，返回选中关键图 [{time, filename, ocr_text, score}]。
 
@@ -136,6 +173,10 @@ def guide_capture(sumz, video: Path, segments: list[dict], title: str, course: s
     # 2) 只在关键时段采样稳定候选帧
     cands = sample_candidates(video, key_segs, cand_dir)
     print(f"稳定候选帧 {len(cands)} 张")
+
+    # 2b) 候选帧去重：同一张幻灯片被讲解多帧（只有字幕变）→ 只保留一张
+    cands = dedup_candidates(cands)
+    print(f"去重后候选帧 {len(cands)} 张")
 
     # 3) 评分：内容量 + 重复度过滤 + VLM 精判
     kept, selected_texts = [], []
