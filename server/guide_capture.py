@@ -58,15 +58,20 @@ def _flush_ocr_cache() -> None:
 
 
 def ocr_slide_text_cached(fp) -> str:
-    """OCR 帧内文字，带内容哈希磁盘缓存（避免重复跑慢速 PaddleOCR）。"""
+    """OCR 帧内文字，带内容哈希磁盘缓存（避免重复跑慢速 OCR）。
+
+    与 _ocr_regions_cached 共享同一份推理：文本 = 区域结果的 text 拼接
+    （vision.ocr_slide_text 本来就是这么实现的）。未命中文本键时，先查区域键，
+    命中则派生，避免同一帧被 OCR 两次。
+    """
     fp = str(fp)
     h = hashlib.md5(Path(fp).read_bytes()).hexdigest()
     hit = _ocr_cache.get(h)
     if hit is not None:
         return hit
-    text = vision.ocr_slide_text(fp)
+    regions = _ocr_regions_cached(fp)          # 复用区域缓存（含一次推理）
+    text = " ".join(r["text"] for r in regions).strip()
     _ocr_cache[h] = text
-    _flush_ocr_cache()
     return text
 
 
@@ -381,19 +386,22 @@ def _is_same_topic(a: dict, b: dict) -> bool:
     """判断两帧是否为同一知识主题（讲解同一张图/概念，如总结图与分图）。
 
     要求**同时**满足：
-    - 子标题区相似（>0.6）：同一主题的幻灯片标题必然一致
-    - 正文区相似（>0.6）：正文内容同主题
+    - 子标题区相似（>0.4）：同一主题的幻灯片标题必然一致
+    - 正文区相似（>0.4）：正文内容同主题
+
+    双条件本身保守：02 集编译器(196) vs SDD(203) 的 sub/mid 相似仅 0.12~0.17，
+    0.4 阈值下仍分开 ✓；分图 vs 总结图 0.78~0.97 仍合并 ✓。降到 0.4 可让
+    网页/代码浏览型视频（画面变化频繁但主题延续）合并更充分，减少冗余帧。
 
     只用正文相似会误合并**共享概念词**的不同幻灯片——03 集 t112(Feature process)
     与 t122(Project evolution) 正文都含 "Feature phase"（mid_sim=0.65~0.69），
     但子标题不同（0.19~0.22），用户明确两者都重要，必须分开。
-    而 02 集 Benefits 分图→总结图 sub_title 一致（0.97）且 mid 相似，正确合并。
     """
     fa, fb = _frame_bands(a["filename"]), _frame_bands(b["filename"])
     if not fa["sub_title"] or not fb["sub_title"] or not fa["mid"] or not fb["mid"]:
         return False
-    return (_text_sim(fa["sub_title"], fb["sub_title"]) > 0.6
-            and _text_sim(fa["mid"], fb["mid"]) > 0.6)
+    return (_text_sim(fa["sub_title"], fb["sub_title"]) > 0.4
+            and _text_sim(fa["mid"], fb["mid"]) > 0.4)
 
 
 def _is_junk_frame(c: dict) -> bool:

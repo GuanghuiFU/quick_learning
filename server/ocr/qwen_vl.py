@@ -68,3 +68,14 @@ class QwenVlOCR:
     def has_text(self, image_path: Path | str) -> bool:
         """画面是否有文字（用于幻灯片筛选，替代 DeepSeek 判断前置过滤）。"""
         return bool(self.ocr_text(image_path))
+
+    def ocr_image(self, image_path: Path | str) -> list[dict]:
+        """兼容 BaseOCR 接口：返回 [{text, x, y, w, h}]。
+
+        qwen-vl-ocr 只返回全文（无坐标），这里把整段文字作为一个覆盖全图的框。
+        适合"文本相似/内容量"判断；标题区/正文区精确分带请用 apple/paddle 引擎。
+        """
+        text = self.ocr_text(image_path)
+        if not text:
+            return []
+        return [{"text": text, "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}]

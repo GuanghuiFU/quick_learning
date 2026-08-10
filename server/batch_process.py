@@ -70,11 +70,13 @@ async def transcribe_video(stt: QwenAudioSTT, video: Path) -> tuple[str, list[di
         all_segments = []  # 所有分句（带全局时间戳）
         for start in range(0, dur, CHUNK_SEC):
             chunk = td / f"chunk_{start}.wav"
+            print(f"    [转写段 {start//60}:{start%60:02d} 切分...]", flush=True)
             subprocess.run(
                 ["ffmpeg", "-y", "-ss", str(start), "-t", str(CHUNK_SEC), "-i", str(wav), str(chunk)],
                 check=True, capture_output=True,
             )
             try:
+                print(f"    [转写段 {start//60}:{start%60:02d} ASR 转写中...]", flush=True)
                 segs_text = await stt.transcribe_segments(chunk)
                 for s in segs_text:
                     if s["text"].strip():

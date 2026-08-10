@@ -35,6 +35,14 @@ class VisionOCR(BaseOCR):
         handler = Vision.VNImageRequestHandler.alloc().initWithCGImage_options_(cgimage, None)
         req = Vision.VNRecognizeTextRequest.alloc().init()
         req.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
+        # 中文支持：显式声明识别语言（默认不含 zh-Hans → 中文识别为乱码）。
+        # zh-Hans 简体中文 + zh-Hant 繁体 + en-US 英文，兼容中英混排幻灯片。
+        langs = ["zh-Hans", "zh-Hant", "en-US"]
+        if hasattr(req, "setRecognitionLanguages_"):
+            try:
+                req.setRecognitionLanguages_(langs)
+            except Exception:  # noqa: BLE001
+                pass
         handler.performRequests_error_([req], None)
         out = []
         for obs in req.results() or []:
@@ -97,11 +105,16 @@ def get_engine() -> BaseOCR:
     global _engine
     if _engine is not None:
         return _engine
-    try:
-        import paddleocr  # noqa: F401
+    from server.config import settings
 
+    engine = (settings.ocr_engine or "apple").lower()
+    if engine == "paddle":
         _engine = PaddleOCRAdapter()
-    except ImportError:
+    elif engine == "qwen-vl":
+        from server.ocr.qwen_vl import QwenVlOCR
+
+        _engine = QwenVlOCR(settings.asr_api_key)  # 实现 BaseOCR.ocr_image
+    else:  # apple / 默认
         _engine = VisionOCR()
     return _engine
 

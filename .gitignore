@@ -5,12 +5,7 @@ __pycache__/
 .DS_Store
 
 # 测试媒体文件（体积大，不提交）
-assets/videos/*.mp4
-assets/videos/*.webm
-assets/videos/*.mkv
-assets/videos/*.mov
-assets/videos/*.m4a
-assets/videos/*.wav
+assets/
 
 # 截图中间产物
 assets/screenshots/

@@ -51,8 +51,8 @@ class Settings(BaseSettings):
     # ---- 截图中间产物目录（assets/screenshots，供检查） ----
     screenshots_dir: str = "assets/screenshots"
 
-    # ---- OCR 引擎：paddle (本地免费) | qwen-vl (云端，效果好) ----
-    ocr_engine: str = "paddle"   # .env: OCR_ENGINE
+    # ---- OCR 引擎：apple (Apple Vision 本地,快) | paddle (本地,中文最准) | qwen-vl (云端) ----
+    ocr_engine: str = "apple"   # .env: OCR_ENGINE
 
     # ---- 关键截图评分权重（Score = w1*Svisual + w2*Socr + w3*Stranscript - w4*Sduplicate） ----
     score_w1: float = 0.3       # 视觉变化
