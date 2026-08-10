@@ -120,8 +120,29 @@ def verify_subtitle_quality(source: str, url: str, ai_sub: str, stt, video: Path
 
         # 维度1：ASR 转写抽样
         import asyncio
+        import threading
 
-        asr_text = asyncio.run(stt.transcribe(wav))
+        # verify_subtitle_quality 是同步函数，但可能被 async 主流程（process_one）调用，
+        # 也可能被独立脚本调用。stt.transcribe 是 async：
+        # - 若已在 running loop 里，asyncio.run() 会抛 "cannot be called from a running
+        #   event loop"，run_until_complete() 也会报 loop already running → 主协程卡死。
+        # - 稳妥方案：在独立线程里用 asyncio.run()（新线程自带新 loop），两种情况都安全。
+        box: dict = {}
+
+        def _run() -> None:
+            try:
+                box["text"] = asyncio.run(stt.transcribe(wav))
+            except Exception as e:  # noqa: BLE001
+                box["error"] = str(e)
+
+        th = threading.Thread(target=_run, daemon=True)
+        th.start()
+        th.join(timeout=330)
+        if "error" in box:
+            print(f"  [字幕校验 ASR 采样失败] {box['error']}")
+            asr_text = ""
+        else:
+            asr_text = box.get("text", "")
 
     # AI 字幕前 30 秒片段（取前几句）
     ai_lines = [l for l in ai_sub.splitlines() if l.strip()]
