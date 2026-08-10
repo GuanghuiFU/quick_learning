@@ -1,7 +1,7 @@
-"""从已有文字稿继续处理（跳过 ASR 转写），完成字幕链 + 关键帧 + 笔记。
+"""从已有文字稿继续处理（跳过 ASR 转写），生成**图文版**学习笔记。
 
-用于长视频：首次转写已完成并保存文字稿后，若后续阶段中断（如关键帧 OCR 慢），
-可复用文字稿 + OCR 磁盘缓存重跑，不必重新 ASR 转写。
+图文版 = 含关键帧截图内嵌的速览 + 完整笔记，文件名带 `-图文版` 后缀，
+与纯文字的 `-文字版` 并存，不覆盖。
 
 用法：
     .venv/bin/python -m server.tests.resume_from_transcript \
@@ -9,7 +9,6 @@
 """
 from __future__ import annotations
 
-import asyncio
 import sys
 from pathlib import Path
 
@@ -47,21 +46,24 @@ def main() -> None:
     subtitle = sub_result["text"]
     print(f"[字幕] {len([l for l in subtitle.splitlines() if l.strip()])} 条 (来源: {sub_result['source']})")
 
-    # 关键帧（复用 OCR 磁盘缓存）
+    # 关键帧（复用 OCR 磁盘缓存，Apple Vision 引擎）
     from server.guide_capture import guide_capture
 
     guide_segs = [{"time_sec": s["time_sec"], "text": s["text"]} for s in segments]
     slides = guide_capture(summarizer, video, guide_segs, title, course=course)
     print(f"[关键画面] {len(slides)} 张")
 
-    # 速览 + 完整笔记
+    # 图文版速览 + 完整笔记（-图文版 后缀，不覆盖文字版）
+    safe = writer._safe_filename(title)
     sr = summarizer.speedread(title, f"local:{video}", subtitle, speech, slides, priority="stt")
-    writer.save_speedread(title, f"local:{video}", sr, slides, course=course)
-    print("[速览已保存]")
+    sr_path = writer._speedread_dir(course) / f"{safe}-图文版.md"
+    sr_path.write_text(writer.build_note(title, f"local:{video}", sr, slides), encoding="utf-8")
+    print(f"[图文版速览已保存] {sr_path.name}")
 
     note = summarizer.summarize(title, f"local:{video}", subtitle, speech, slides, priority="stt")
-    writer.save_note(title, f"local:{video}", note, slides, course=course)
-    print("[完整笔记已保存]")
+    note_path = writer._note_dir(course) / f"{safe}-图文版.md"
+    note_path.write_text(writer.build_note(title, f"local:{video}", note, slides), encoding="utf-8")
+    print(f"[图文版完整笔记已保存] {note_path.name}")
 
 
 if __name__ == "__main__":
