@@ -485,17 +485,22 @@ def guide_capture(sumz, video: Path, segments: list[dict], title: str, course: s
             entry["decision"] = "排除:内容过少"
             score_log.append(entry)
             continue
-        # 与文字稿重复度：OCR 内容与讲解文字高度重合 → 纯口播无图，不是关键图
-        # 找到该候选对应的分句文字稿
-        cur_transcript = next(
-            (s["text"] for s in segments if abs(s["time_sec"] - c["time"]) <= 2), ""
-        )
-        s_dup_transcript = sumz.text_similarity(ocr_text, cur_transcript) if cur_transcript else 0.0
-        if s_dup_transcript > 0.5:
-            c["reject"] = f"与文字稿重复 {s_dup_transcript:.2f}"
-            entry["decision"] = "排除:与文字稿重复"
-            score_log.append(entry)
-            continue
+        # 与文字稿重复度：OCR 内容与讲解文字高度重合 → 纯口播无图，不是关键图。
+        # 但幻灯片标题/要点经常与讲解措辞重合（如总结图的 "Control code with small
+        # changes to spec" 正是口播句），直接用字符 Jaccard 会误杀真实幻灯片
+        # （实测 t157 总结图 sim=0.53、t254 Agent 图 sim=0.57 被误排）。
+        # 因此仅在"画面本身几乎无结构化内容"（正文区文字极少）时才用它：
+        # 无正文的纯口播/过渡画面 + 与讲解高度重复 → 排除；有正文的幻灯片 → 保留。
+        if _frame_bands(c["filename"])["mid_len"] <= 10:
+            cur_transcript = next(
+                (s["text"] for s in segments if abs(s["time_sec"] - c["time"]) <= 2), ""
+            )
+            s_dup_transcript = sumz.text_similarity(ocr_text, cur_transcript) if cur_transcript else 0.0
+            if s_dup_transcript > 0.5:
+                c["reject"] = f"与文字稿重复 {s_dup_transcript:.2f}"
+                entry["decision"] = "排除:与文字稿重复"
+                score_log.append(entry)
+                continue
         s_ocr = sumz.score_ocr_importance(ocr_text)
         entry["s_ocr"] = round(s_ocr, 2)
         s_dup = max((sumz.text_similarity(ocr_text, t) for t in selected_texts), default=0.0)
