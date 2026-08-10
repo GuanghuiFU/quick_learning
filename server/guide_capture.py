@@ -19,6 +19,10 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+import hashlib
+import json
+import os
+
 from server.config import settings
 from server.notes import writer
 from server.ocr import vision
@@ -30,6 +34,56 @@ STABLE_DIFF = 0.05
 MIN_OCR_CHARS = 8
 # 视觉判断引擎缓存
 _vision = None
+
+# ---- OCR 磁盘缓存 -----------------------------------------------------------
+# PaddleOCR 单帧 ~3-5s，候选帧几十上百张，每次重跑全量 OCR 很慢。
+# 以图片内容哈希为键，落盘缓存，规则迭代时秒级复用。
+_OCR_CACHE_PATH = os.environ.get(
+    "KEYFRAME_OCR_CACHE", "/tmp/keyframe_ocr_cache.json")
+_ocr_cache: dict[str, str] = {}
+if os.path.exists(_OCR_CACHE_PATH):
+    try:
+        with open(_OCR_CACHE_PATH, encoding="utf-8") as _f:
+            _ocr_cache = json.load(_f)
+    except Exception:  # noqa: BLE001
+        _ocr_cache = {}
+
+
+def _flush_ocr_cache() -> None:
+    try:
+        with open(_OCR_CACHE_PATH, "w", encoding="utf-8") as _f:
+            json.dump(_ocr_cache, _f, ensure_ascii=False)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def ocr_slide_text_cached(fp) -> str:
+    """OCR 帧内文字，带内容哈希磁盘缓存（避免重复跑慢速 PaddleOCR）。"""
+    fp = str(fp)
+    h = hashlib.md5(Path(fp).read_bytes()).hexdigest()
+    hit = _ocr_cache.get(h)
+    if hit is not None:
+        return hit
+    text = vision.ocr_slide_text(fp)
+    _ocr_cache[h] = text
+    _flush_ocr_cache()
+    return text
+
+
+def _ocr_regions_cached(fp) -> list[dict]:
+    """OCR 帧内带位置的文字区域，同样走磁盘缓存（键前缀 R:）。
+
+    返回 [{text, x, y, w, h}]（归一化，y 自顶向下），供标题区/正文区分析用。
+    """
+    fp = str(fp)
+    h = hashlib.md5(Path(fp).read_bytes()).hexdigest()
+    hit = _ocr_cache.get("R:" + h)
+    if hit is not None:
+        return hit
+    regions = vision.ocr_image(fp)
+    _ocr_cache["R:" + h] = regions
+    _flush_ocr_cache()
+    return regions
 
 
 def _get_vision():
@@ -118,6 +172,10 @@ def sample_candidates(video: Path, segments: list[dict], out_dir: Path, fps: flo
 
 # 去重阈值：画面主体差异低于此值视为同一张幻灯片（只有字幕变化）
 DEDUP_DIFF = 0.05
+# 同帧判定的子标题相似阈值：同一张幻灯片（仅字幕变）子标题必然一致。
+# 实测：41 vs 56（同一张 "Likely results" 错误图）子标题 sim=0.44（OCR 噪声），
+# 而不同幻灯片 196 vs 203=0.17、12 vs 41=0.31。0.4 可合并前者、隔离后者。
+SAME_FRAME_TITLE_SIM = 0.4
 # 关键画面最小 OCR 内容量（低于此值视为无信息画面，直接过滤）
 MIN_KEYFRAME_OCR = 50
 # 画面复杂度下限（边缘方差，低于=纯色/无内容）
@@ -127,7 +185,7 @@ MIN_EDGE_VAR = 100
 def _frame_ocr_len(fp) -> int:
     """本地 OCR 提取文字量（PaddleOCR，快，无 API）。"""
     try:
-        return len(vision.ocr_slide_text(fp).strip())
+        return len(ocr_slide_text_cached(fp).strip())
     except Exception:  # noqa: BLE001
         return 0
 
@@ -145,36 +203,211 @@ def _frame_complexity(fp) -> tuple[float, float]:
         return 0.0, 0.0
 
 
+def _text_quality(ocr_text: str) -> float:
+    """OCR 文本质量（0-1）：惩罚乱码/无意义符号。
+
+    乱码特征：符号占比高、字母数字随机拼接（如 'Wi6I110A Sptedrn tevipeei'）。
+    正常文本：中文或英文单词占主导。
+    """
+    if not ocr_text:
+        return 0.0
+    # 有效字符（汉字+字母）
+    cn = sum(1 for c in ocr_text if '一' <= c <= '鿿')
+    letters = sum(1 for c in ocr_text if c.isalpha())
+    symbols = sum(1 for c in ocr_text if not c.isalnum() and not c.isspace())
+    total = max(len(ocr_text), 1)
+    # 符号占比高 = 乱码
+    if symbols / total > 0.2:
+        return 0.1
+    # 有效字母+汉字占比
+    return min(1.0, (cn + letters) / total)
+
+
 def _local_score(c: dict) -> float:
-    """本地确定性评分：OCR 内容量 + 画面复杂度（不依赖 AI 判断）。
+    """本地确定性评分：OCR 内容量 + 画面复杂度 + 文本质量（不依赖 AI 判断）。
 
     用于去重保留策略和候选排序，可解释、稳定。
     """
     ocr_len = c.get("ocr_len")
+    ocr_text = c.get("ocr_text", "")
     if ocr_len is None:
-        ocr_len = _frame_ocr_len(c["filename"])
+        ocr_text = _ocr_text(c["filename"])
+        c["ocr_text"] = ocr_text
+        ocr_len = len(ocr_text.strip())
         c["ocr_len"] = ocr_len
     edge, color = c.get("complexity", (None, None))
     if edge is None:
         edge, color = _frame_complexity(c["filename"])
         c["complexity"] = (edge, color)
-    # 内容量 + 复杂度：信息越丰富分越高
-    return ocr_len * 0.5 + edge * 0.0005 + color * 0.1
+    quality = _text_quality(ocr_text)
+    # 内容量 + 复杂度 + 文本质量（惩罚乱码）
+    return ocr_len * 0.5 * quality + edge * 0.0005 + color * 0.1
+
+
+def _ocr_text(fp) -> str:
+    """本地 OCR 提取文字（PaddleOCR，快，无 API）。"""
+    try:
+        return ocr_slide_text_cached(fp).strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _text_sim(a: str, b: str) -> float:
+    """文本相似度（字符 bigram Jaccard），用于判断是否同一主题。"""
+    import re as _re
+
+    def clean(s):
+        return _re.sub(r"[^\w一-鿿]+", "", s)[:200]
+
+    ca, cb = clean(a), clean(b)
+    if not ca or not cb:
+        return 0.0
+
+    def bigrams(s):
+        return {s[i:i+2] for i in range(len(s) - 1)}
+
+    ga, gb = bigrams(ca), bigrams(cb)
+    if not ga or not gb:
+        return 0.0
+    return len(ga & gb) / len(ga | gb)
+
+
+# 标题区：画面顶部（不含水印角标），同一张幻灯片此处像素/文字一致
+TITLE_BAND_Y = 0.28
+# 中间正文区：实际内容所在
+MID_BAND_Y0, MID_BAND_Y1 = 0.30, 0.85
+
+
+def _frame_bands(fp) -> dict:
+    """提取帧的标题区文字 / 正文区文字与区域数（带区域缓存）。
+
+    返回 {"title": str, "sub_title": str, "title_regions": int, "mid": str,
+          "mid_regions": int, "mid_len": int, "regions": int}。
+    """
+    regions = _ocr_regions_cached(fp)
+    title = [r for r in regions if r["y"] < TITLE_BAND_Y]
+    # 子标题带：排除顶部水印角标行（JETBRAINS/DeepLearning.AI 的 y≈0.01，OCR 易把
+    # "AI" 识别成 "41" 等噪声），用 [0.05,0.30) 作为"真正的幻灯片标题"
+    sub_title = [r for r in regions if 0.05 <= r["y"] < TITLE_BAND_Y]
+    mid = [r for r in regions if MID_BAND_Y0 <= r["y"] <= MID_BAND_Y1]
+    return {
+        "title": "".join(r["text"] for r in title),
+        "sub_title": "".join(r["text"] for r in sub_title),
+        "title_regions": len(title),
+        "mid": "".join(r["text"] for r in mid),
+        "mid_regions": len(mid),
+        "mid_len": len("".join(r["text"] for r in mid)),
+        "regions": len(regions),
+    }
+
+
+# 课程片头/片尾 credit 帧特征词：这些词几乎只出现在课程封面/结尾的水印横幅上
+# （"XX课程研究院 + 讲师名 + 斯坦福"），正常教学内容不会出现。
+CREDIT_KEYWORDS = ("研究院", "吴思达", "吴恩达", "斯坦福")
+# credit 帧画面复杂度上限：实测 02 集封面/片尾帧 edge_var 174~290，正常内容帧 ≥343
+CREDIT_MAX_EDGE = 320
+
+
+def _is_credit_frame(fp) -> bool:
+    """识别课程封面/片尾credit帧：只有"课程名+讲师水印"，无实际教学正文。
+
+    双重特征（都满足才算，避免误伤正常教学内容）：
+    - OCR 全文含课程水印专属词（研究院/讲师名/斯坦福）
+    - 画面复杂度低（纯色背景的封面/片尾页，edge_var < 320）
+    实测 02 集 t278~280（课程封面/片尾）命中；正常内容帧 edge≥343 不受影响。
+    """
+    text = _ocr_text(fp)
+    if not text or not any(k in text for k in CREDIT_KEYWORDS):
+        return False
+    edge, _ = _frame_complexity(fp)
+    return edge < CREDIT_MAX_EDGE
+
+
+def _is_cartoon_frame(fp) -> bool:
+    """识别卡通/插画帧：正文区几乎没有文字（mid_len 极低），画面复杂度却达标。
+
+    实测 02 集 t269~271（讲师卡通插画，"Your pair programmer"）mid_len≈1-4。
+    正常内容帧（t12）mid_len 也有 25，但正文区有实际内容；卡通帧正文区为空。
+    """
+    bands = _frame_bands(fp)
+    return bands["mid_len"] <= 5
+
+
+def _is_same_frame(a: dict, b: dict) -> bool:
+    """判断两帧是否为同一张幻灯片（主体几乎相同，仅字幕/细微变化）。
+
+    要求**同时**满足：
+    - 主体区（排除字幕带）像素 diff < DEDUP_DIFF
+    - 标题区文字相似（同一张幻灯片的标题必然一致）
+
+    仅 diff 不够——实测 t196(编译器) vs t203(SDD) 主体 diff 仅 0.017
+    （版式相近、都有 spec.md/code.cpp 流程），但子标题一个是 "Compiler" 一个是
+    "Spec-Driven Development"，是不同的幻灯片，必须保留两张。
+
+    标题用 **子标题带 [0.05,0.30)**（排除顶部水印角标行，避免 "DeepLearning.AI"
+    的 OCR 噪声如 41→"41"）。同一张幻灯片（如 41 vs 56）子标题一致。
+    """
+    try:
+        img_a = Image.open(a["filename"]).convert("RGB").resize((160, 90))
+        img_b = Image.open(b["filename"]).convert("RGB").resize((160, 90))
+        diff = _body_region_diff(img_b, np.asarray(img_a, dtype=np.int16))
+    except Exception:  # noqa: BLE001
+        return False
+    if diff is None or diff >= DEDUP_DIFF:
+        return False
+    ta = _frame_bands(a["filename"])["sub_title"]
+    tb = _frame_bands(b["filename"])["sub_title"]
+    if not ta or not tb:
+        return True  # 无标题可比较 → 以像素为准
+    return _text_sim(ta, tb) > SAME_FRAME_TITLE_SIM
+
+
+def _is_same_topic(a: dict, b: dict) -> bool:
+    """判断两帧是否为同一知识主题（讲解同一张图/概念，如总结图与分图）。
+
+    用**正文区**文字相似（比整图相似更聚焦内容），阈值高于同帧判定。
+    实测：分图 vs 总结图 mid 相似 0.79~0.94；不同概念（编译器 vs SDD）0.24。
+    """
+    ma = _frame_bands(a["filename"])["mid"]
+    mb = _frame_bands(b["filename"])["mid"]
+    if not ma or not mb:
+        return False
+    return _text_sim(ma, mb) > 0.6
+
+
+def _is_junk_frame(c: dict) -> bool:
+    """无学习价值的画面：课程封面/片尾 credit 帧、卡通插画帧。
+
+    这些帧 OCR/复杂度 可能达标（所以本地过滤挡不住），但内容为空壳。
+    返回 True 表示应排除。
+    """
+    if _is_credit_frame(c["filename"]):
+        c["reject"] = "本地规则:课程封面/片尾credit帧"
+        return True
+    if _is_cartoon_frame(c["filename"]):
+        c["reject"] = "本地规则:卡通/无正文帧"
+        return True
+    return False
 
 
 def dedup_candidates(cands: list[dict]) -> list[dict]:
-    """候选帧去重：同一张幻灯片被讲解多帧（画面主体相同，仅字幕变化）→ 只保留一张。
+    """候选帧去重（滑动窗口，高效）：同一张幻灯片被讲解多帧 → 只保留一张。
 
-    保留策略：**本地评分**（OCR 内容量 + 画面复杂度）最高的帧，而非 DeepSeek importance。
-    依据：_body_region_diff（排除字幕带）对重复帧返回 ≈0.0，对不同画面返回 0.3+。
+    策略：每帧只与**之前保留的最近 N 帧**比较（N=窗口），而非全局 O(n²)。
+    - 同一张幻灯片（主体 diff 小 **且** 标题区一致）→ 合并，保留"内容更丰富"帧
+    - 同一知识主题（正文区相似，如总结图 vs 分图）→ 合并，保留"内容更丰富"帧
+      （总结图通常正文区文字更多，见 02 集 t157 三模块总结图）
+
+    依据：_body_region_diff 对重复帧 ≈0.0；标题区一致区分"同一张"；
+    正文区相似区分"同一主题"。内容更丰富的帧 = 正文区文字更多（信息全，如总结图）。
     """
     if not cands:
         return cands
-    # 按时间排序
+    WINDOW = 8  # 滑动窗口：只和最近 8 帧比较
     cands = sorted(cands, key=lambda c: c["time"])
     kept = []
     for c in cands:
-        # 本地过滤：无信息画面（纯色/无文字）直接排除
+        # 本地过滤：无信息画面直接排除
         if _frame_ocr_len(c["filename"]) < MIN_KEYFRAME_OCR:
             c["reject"] = "本地规则:内容量不足"
             continue
@@ -182,24 +415,29 @@ def dedup_candidates(cands: list[dict]) -> list[dict]:
         if edge < MIN_EDGE_VAR:
             c["reject"] = "本地规则:纯色/无内容"
             continue
-        if not kept:
-            kept.append(c)
+        # 课程封面/片尾 credit 帧、卡通插画帧 → 排除
+        if _is_junk_frame(c):
             continue
-        # 与最近保留的候选帧比较画面主体差异
-        prev = kept[-1]
-        try:
-            img_cur = Image.open(c["filename"]).convert("RGB").resize((160, 90))
-            img_prev = Image.open(prev["filename"]).convert("RGB").resize((160, 90))
-            diff = _body_region_diff(img_cur, np.asarray(img_prev, dtype=np.int16))
-        except Exception:  # noqa: BLE001
-            diff = None
-        if diff is None or diff >= DEDUP_DIFF:
-            # 画面主体不同 → 是新幻灯片，保留
+        cur_ocr = _ocr_text(c["filename"])
+        # 只和窗口内最近的帧比较
+        dup_of = None
+        dup_kind = None
+        for prev in kept[-WINDOW:]:
+            if _is_same_frame(c, prev):
+                dup_of, dup_kind = prev, "同一张"
+                break
+            if _is_same_topic(c, prev):
+                dup_of, dup_kind = prev, "同一主题"
+                break
+        if dup_of is None:
+            c["ocr_text"] = cur_ocr
             kept.append(c)
         else:
-            # 同一张幻灯片：保留本地评分更高的（内容更丰富的）
-            if _local_score(c) > _local_score(prev):
-                kept[-1] = c
+            # 同一画面/主题：保留"正文内容更丰富"的帧（信息更全，如总结图）
+            c_mid = _frame_bands(c["filename"])["mid_len"]
+            p_mid = _frame_bands(dup_of["filename"])["mid_len"]
+            if c_mid > p_mid:
+                kept[kept.index(dup_of)] = c
     return kept
 
 
@@ -239,7 +477,7 @@ def guide_capture(sumz, video: Path, segments: list[dict], title: str, course: s
             "s_ocr": "", "s_transcript": "", "s_dup": "", "score": "",
             "visual_verdict": "", "decision": "候选",
         }
-        ocr_text = vision.ocr_slide_text(c["filename"])
+        ocr_text = ocr_slide_text_cached(c["filename"])
         entry["ocr_text"] = ocr_text[:100]
         # 内容量过滤：空白/水印排除
         if len(ocr_text.strip()) < MIN_OCR_CHARS:
