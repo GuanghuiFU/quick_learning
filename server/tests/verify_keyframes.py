@@ -10,7 +10,8 @@ LLM 评分（DeepSeek 的 s_ocr/s_transcript）不在此复跑——已有 score
 本工具定位"结构性"问题：哪些标注帧在去重/本地过滤阶段被错误丢弃。
 
 用法：
-    .venv/bin/python -m server.tests.verify_keyframes
+    .venv/bin/python -m server.tests.verify_keyframes [集号]
+    集号默认 02；也支持 03（用户已标注）
 """
 from __future__ import annotations
 
@@ -27,49 +28,75 @@ from server.guide_capture import (  # noqa: E402
     ocr_slide_text_cached as _ocr_text,
 )
 
-# 02 集标注（用户 important_pic_label.md）：time -> 备注
-LABELS: dict[int, str] = {
-    12: "重要: 示例图",
-    54: "重要: 有用信息",
-    70: "重要: 示意图",
-    89: "重要: 示意图",
-    157: "重要: 总结图(三模块合并)",
-    188: "次要: 与前面差别不大，随意选一个即可",
-    196: "重要: 讲解complier",
-    203: "重要: 讲解Spec-Driven Development",
-    235: "重要: 聊天机器人",
-    247: "重要: Agent",
+# 各集标注（来源 assets/important_pic_label.md）
+EPISODES: dict[int, dict] = {
+    2: {
+        "name": "02-02_为什么要规范驱动开发",
+        "labels": {
+            12: "重要: 示例图",
+            54: "重要: 有用信息",
+            70: "重要: 示意图",
+            89: "重要: 示意图",
+            157: "重要: 总结图(三模块合并)",
+            188: "次要: 与前面差别不大，随意选一个即可",
+            196: "重要: 讲解complier",
+            203: "重要: 讲解Spec-Driven Development",
+            235: "重要: 聊天机器人",
+            247: "重要: Agent",
+        },
+        "exclude": {
+            13: "重复 t12", 14: "重复 t12",
+            55: "重复 t54",
+            158: "重复 t157",
+            278: "课程封面/credit", 279: "课程封面/credit", 280: "课程封面/credit",
+            270: "卡通插画", 271: "卡通插画",
+        },
+    },
+    3: {
+        "name": "03-03_工作流程概览",
+        "labels": {
+            32: "次要: 作用不大，无周边文字看不懂",
+            49: "重要: 讲解三大工作流",
+            85: "重要: 配好文字后是非常好的讲解",
+            98: "重要: 配好文字后是非常好的讲解",
+            99: "重要: 配好文字后是非常好的讲解",
+            113: "重要: 讲解 feature process",
+            114: "重要: 配好文字后是非常好的讲解",
+            122: "重要: 配好文字后是非常好的讲解",
+            169: "重要: 最终总结图，压过 t151~162 六张",
+        },
+        "exclude": {},
+    },
 }
-IMPORTANT = {t for t, n in LABELS.items() if n.startswith("重要")}
 
-# 明确"不选/重复"的帧（用户指出不应选）——若被保留视为误选
-EXCLUDE: dict[int, str] = {
-    13: "重复 t12",
-    14: "重复 t12",
-    55: "重复 t54",
-    158: "重复 t157",
-    278: "课程封面/credit",
-    279: "课程封面/credit",
-    280: "课程封面/credit",
-    270: "卡通插画",
-    271: "卡通插画",
-}
+_episode = 2
 
-# 候选帧目录：与用户标注同源的集合（seg 编号与 important_pic_label.md 一致）
-CAND_DIR = Path("assets/screenshots/Vibe Coding 2026/02-02_为什么要规范驱动开发/guide/candidates")
+
+def _get_episode() -> dict:
+    return EPISODES[_episode]
+
+
+def _cand_dir() -> Path:
+    ep = _get_episode()
+    return Path("assets/screenshots/Vibe Coding 2026") / ep["name"] / "guide" / "candidates"
 
 
 def load_candidates() -> list[dict]:
     cands = []
-    for fp in sorted(CAND_DIR.glob("*.jpg")):
+    for fp in sorted(_cand_dir().glob("*.jpg")):
         t = int(fp.stem.split("t")[1].rstrip("s"))
         cands.append({"time": t, "filename": str(fp)})
     return cands
 
 
 def run() -> None:
+    ep = _get_episode()
+    labels = ep["labels"]
+    exclude = ep["exclude"]
+    important = {t for t, n in labels.items() if n.startswith("重要")}
+
     cands = load_candidates()
-    print(f"候选帧: {len(cands)} 张 (标注同源集合)")
+    print(f"[{ep['name']}] 候选帧: {len(cands)} 张 (标注同源集合)")
     deduped = dedup_candidates(cands)
     kept = sorted(deduped, key=lambda c: c["time"])
     print(f"去重+本地过滤后: {len(kept)} 张: {[c['time'] for c in kept]}")
@@ -77,10 +104,10 @@ def run() -> None:
     kept_times = {c["time"] for c in kept}
 
     # ---- 内容覆盖：标注"重要"的幻灯片是否被某保留帧代表 ----
-    print(f"\n=== 内容覆盖（标注重要 {len(IMPORTANT)} 个） ===")
+    print(f"\n=== 内容覆盖（标注重要 {len(important)} 个） ===")
     uncovered = []
-    for t in sorted(IMPORTANT):
-        note = LABELS[t]
+    for t in sorted(important):
+        note = labels[t]
         # 该标注幻灯片的标题（用于在保留帧中找同主题代表）
         label_frames = [c for c in cands if abs(c["time"] - t) <= 2]
         label_title = (_frame_bands(label_frames[0]["filename"])["sub_title"]
@@ -105,7 +132,7 @@ def run() -> None:
         print(f"\n⚠ 未覆盖 {len(uncovered)} 个: {uncovered}")
         # 诊断每个未覆盖标注：是被本地过滤还是去重合并
         for t in sorted(uncovered):
-            note = LABELS[t]
+            note = labels[t]
             near = [c for c in cands if abs(c["time"] - t) <= 2]
             for c in near:
                 b = _frame_bands(c["filename"])
@@ -116,9 +143,9 @@ def run() -> None:
 
     # ---- 误选：保留帧里有没有用户明确说不该选的 ----
     print(f"\n=== 误选检查 ===")
-    wrong = [t for t in sorted(kept_times) if t in EXCLUDE]
+    wrong = [t for t in sorted(kept_times) if t in exclude]
     if wrong:
-        print(f"  ✗ 保留了不应选的帧: {[(t, EXCLUDE[t]) for t in wrong]}")
+        print(f"  ✗ 保留了不应选的帧: {[(t, exclude[t]) for t in wrong]}")
     else:
         print("  无（无 credit/卡通/重复帧残留）✓")
 
@@ -127,10 +154,19 @@ def run() -> None:
     for c in kept:
         t = c["time"]
         b = _frame_bands(c["filename"])
-        tag = "重要" if t in IMPORTANT else ("次要" if t in LABELS else "—")
+        tag = "重要" if t in important else ("次要" if t in labels else "—")
         print(f"  {t:4d}s [{tag}] local={_local_score(c):.2f} sub_title={b['sub_title'][:24]!r} "
               f"mid_len={b['mid_len']}")
 
 
 if __name__ == "__main__":
+    import argparse
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("episode", type=int, nargs="?", default=2, help="集号（02 或 03）")
+    args = ap.parse_args()
+    if args.episode not in EPISODES:
+        print(f"未配置集号 {args.episode} 的标注，可用: {sorted(EPISODES)}")
+        sys.exit(1)
+    _episode = args.episode
     run()

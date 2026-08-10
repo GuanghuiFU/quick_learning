@@ -180,6 +180,9 @@ SAME_FRAME_TITLE_SIM = 0.4
 MIN_KEYFRAME_OCR = 50
 # 画面复杂度下限（边缘方差，低于=纯色/无内容）
 MIN_EDGE_VAR = 100
+# 正文区内容量下限：mid_len 低于此视为"过渡/动画帧"（无实质正文）
+# 实测 03 集 t18~33（层级图动画过渡）mid_len=13；正常内容帧 ≥24
+MIN_MID_LEN = 15
 
 
 def _frame_ocr_len(fp) -> int:
@@ -306,21 +309,33 @@ def _frame_bands(fp) -> dict:
 CREDIT_KEYWORDS = ("研究院", "吴思达", "吴恩达", "斯坦福")
 # credit 帧画面复杂度上限：实测 02 集封面/片尾帧 edge_var 174~290，正常内容帧 ≥343
 CREDIT_MAX_EDGE = 320
+# 视频标题封面/章节标题页特征：**正文区(mid)** 含品牌 Logo（JETBRAINS/DeepLearning.AI）。
+# 正常内容帧的正文区从不含 Logo（Logo 只在顶部角标），标题封面页会把课程名/合作方
+# Logo 放在画面中央。实测 03 集 t0/t1（视频标题页）、02 集 t278~280（片尾credit）命中。
+LOGO_MID_WORDS = ("JETBRAINS", "DeepLearning", "Deeplearning", "deeplearning")
 
 
 def _is_credit_frame(fp) -> bool:
-    """识别课程封面/片尾credit帧：只有"课程名+讲师水印"，无实际教学正文。
+    """识别课程封面/片尾credit帧、视频标题封面页：只有课程名/Logo，无实际教学正文。
 
-    双重特征（都满足才算，避免误伤正常教学内容）：
-    - OCR 全文含课程水印专属词（研究院/讲师名/斯坦福）
-    - 画面复杂度低（纯色背景的封面/片尾页，edge_var < 320）
-    实测 02 集 t278~280（课程封面/片尾）命中；正常内容帧 edge≥343 不受影响。
+    两种情况：
+    - 含课程水印专属词（研究院/讲师/斯坦福）且画面复杂度低（封面/片尾页）
+    - **正文区含品牌 Logo**（标题封面页把 Logo 放画面中央，正常内容页不会）
+    实测 02 集 t278~280、03 集 t0/t1 命中；正常内容帧不受影响。
     """
     text = _ocr_text(fp)
-    if not text or not any(k in text for k in CREDIT_KEYWORDS):
+    if not text:
         return False
-    edge, _ = _frame_complexity(fp)
-    return edge < CREDIT_MAX_EDGE
+    # 情况1：课程水印 + 低复杂度
+    if any(k in text for k in CREDIT_KEYWORDS):
+        edge, _ = _frame_complexity(fp)
+        if edge < CREDIT_MAX_EDGE:
+            return True
+    # 情况2：正文区含品牌 Logo（标题封面页特征）
+    mid = _frame_bands(fp)["mid"]
+    if any(k in mid for k in LOGO_MID_WORDS):
+        return True
+    return False
 
 
 def _is_cartoon_frame(fp) -> bool:
@@ -365,14 +380,20 @@ def _is_same_frame(a: dict, b: dict) -> bool:
 def _is_same_topic(a: dict, b: dict) -> bool:
     """判断两帧是否为同一知识主题（讲解同一张图/概念，如总结图与分图）。
 
-    用**正文区**文字相似（比整图相似更聚焦内容），阈值高于同帧判定。
-    实测：分图 vs 总结图 mid 相似 0.79~0.94；不同概念（编译器 vs SDD）0.24。
+    要求**同时**满足：
+    - 子标题区相似（>0.6）：同一主题的幻灯片标题必然一致
+    - 正文区相似（>0.6）：正文内容同主题
+
+    只用正文相似会误合并**共享概念词**的不同幻灯片——03 集 t112(Feature process)
+    与 t122(Project evolution) 正文都含 "Feature phase"（mid_sim=0.65~0.69），
+    但子标题不同（0.19~0.22），用户明确两者都重要，必须分开。
+    而 02 集 Benefits 分图→总结图 sub_title 一致（0.97）且 mid 相似，正确合并。
     """
-    ma = _frame_bands(a["filename"])["mid"]
-    mb = _frame_bands(b["filename"])["mid"]
-    if not ma or not mb:
+    fa, fb = _frame_bands(a["filename"]), _frame_bands(b["filename"])
+    if not fa["sub_title"] or not fb["sub_title"] or not fa["mid"] or not fb["mid"]:
         return False
-    return _text_sim(ma, mb) > 0.6
+    return (_text_sim(fa["sub_title"], fb["sub_title"]) > 0.6
+            and _text_sim(fa["mid"], fb["mid"]) > 0.6)
 
 
 def _is_junk_frame(c: dict) -> bool:
@@ -417,6 +438,12 @@ def dedup_candidates(cands: list[dict]) -> list[dict]:
             continue
         # 课程封面/片尾 credit 帧、卡通插画帧 → 排除
         if _is_junk_frame(c):
+            continue
+        # 正文区过于稀疏（mid_len < MIN_MID_LEN）→ 过渡/动画帧，无实质内容
+        # 实测 03 集 t18~33（"Feature level" 层级图动画过渡帧）mid_len=13，
+        # 用户标注这类"作用不大"；02 集正常内容帧 mid_len ≥ 24。
+        if _frame_bands(c["filename"])["mid_len"] < MIN_MID_LEN:
+            c["reject"] = "本地规则:正文区内容稀疏"
             continue
         cur_ocr = _ocr_text(c["filename"])
         # 只和窗口内最近的帧比较

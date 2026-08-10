@@ -95,3 +95,43 @@ def test_dedup_keeps_distinct_adjacent_slides(setup, fake_bands) -> None:
     times = sorted(c["time"] for c in kept)
     assert 196 in times and 203 in times  # 编译器 + SDD 都要
     assert len(times) == 2                # 197 与 196 合并
+
+
+def test_same_topic_requires_same_subtitle(setup, fake_bands) -> None:
+    """同主题判定必须同时满足子标题相似——仅正文共享概念词不算同主题。
+
+    03 集 t112(Feature process) vs t122(Project evolution) 正文都含 "Feature phase"
+    （mid 相似），但子标题不同，用户明确两者都重要，必须分开。
+    """
+    cands = [
+        _mk(setup, 112, "Feature process", "feature phase 1 feature phase 2 specification"),
+        _mk(setup, 113, "Feature process", "feature phase 1 feature phase 2 specification"),
+        _mk(setup, 122, "Project evolution", "feature phase 1 feature phase 2 replacement"),
+    ]
+    kept = gc.dedup_candidates(cands)
+    times = sorted(c["time"] for c in kept)
+    assert 112 in times and 122 in times  # Feature process 和 Project evolution 都保留
+    assert len(times) == 2                # 113 与 112 合并
+
+
+def test_title_cover_frame_rejected(setup, fake_bands, monkeypatch) -> None:
+    """视频标题封面页（正文区含品牌 Logo）→ 排除。
+
+    03 集 t0（"Spec-Driven Development ... Workflow overview" + JETBRAINS/DeepLearning
+    Logo 在画面中央）是章节标题页，不是学习内容。
+    """
+    from PIL import Image
+
+    fp = setup / "0000.jpg"
+    Image.new("RGB", (2, 2), "white").save(fp)
+    c = {"time": 0, "filename": str(fp)}
+    meta = getattr(gc, "_bands_meta", {})
+    meta[str(fp)] = {
+        "sub_title": "Spec-Driven Development",
+        "mid": "with Coding Agents Workflow overview JETBRAINS DeepLearning.AI",
+        "mid_len": 52,
+    }
+    gc._bands_meta = meta
+    monkeypatch.setattr(gc, "_ocr_text", lambda fp: meta[str(fp)]["mid"])  # 模拟全文 OCR
+    # 此帧应被 _is_credit_frame 识别（正文区含 Logo）
+    assert gc._is_credit_frame(str(fp)) is True
