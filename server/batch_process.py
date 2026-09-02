@@ -252,6 +252,11 @@ async def process_one(summarizer, stt, video: Path, priority: str, mode: str, co
 
 
 async def main() -> None:
+    # 重定向到日志文件时 stdout 是块缓冲的：进度会攒到进程退出才一次性出，
+    # 把"正常在跑"看成"卡死"（且 stderr 的 traceback 会排在 stdout 之前，误导归因）。
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+
     ap = argparse.ArgumentParser(description="批量处理视频文件夹 → Obsidian 笔记")
     ap.add_argument("input", help="视频文件、包含视频的文件夹，或视频 URL（配合 --url）")
     ap.add_argument("--priority", default="both", choices=["ocr", "stt", "both"])

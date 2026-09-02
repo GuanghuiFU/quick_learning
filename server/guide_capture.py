@@ -38,8 +38,10 @@ _vision = None
 # ---- OCR 磁盘缓存 -----------------------------------------------------------
 # PaddleOCR 单帧 ~3-5s，候选帧几十上百张，每次重跑全量 OCR 很慢。
 # 以图片内容哈希为键，落盘缓存，规则迭代时秒级复用。
+# 默认落在项目 .cache/（原先用 /tmp，机器重启即失效 → 重跑等于全量重 OCR）。
+_CACHE_DIR = Path(__file__).resolve().parents[1] / ".cache"
 _OCR_CACHE_PATH = os.environ.get(
-    "KEYFRAME_OCR_CACHE", "/tmp/keyframe_ocr_cache.json")
+    "KEYFRAME_OCR_CACHE", str(_CACHE_DIR / "keyframe_ocr_cache.json"))
 _ocr_cache: dict[str, str] = {}
 if os.path.exists(_OCR_CACHE_PATH):
     try:
@@ -51,10 +53,48 @@ if os.path.exists(_OCR_CACHE_PATH):
 
 def _flush_ocr_cache() -> None:
     try:
+        Path(_OCR_CACHE_PATH).parent.mkdir(parents=True, exist_ok=True)
         with open(_OCR_CACHE_PATH, "w", encoding="utf-8") as _f:
             json.dump(_ocr_cache, _f, ensure_ascii=False)
     except Exception:  # noqa: BLE001
         pass
+
+
+# ---- 讲解重要性磁盘缓存 ------------------------------------------------------
+# 逐句评分是整条流程最大耗时项；调规则/补笔记重跑时不该再问一遍 LLM。
+IMPORTANCE_CHUNK = int(os.environ.get("IMPORTANCE_CHUNK", "20"))      # 每次 LLM 调用评估句数
+IMPORTANCE_WORKERS = int(os.environ.get("IMPORTANCE_WORKERS", "6"))   # 批次间并发数
+# 评分标尺版本：改 score_transcript_importance* 的 prompt 口径时必须 bump，
+# 否则 .cache 里的旧分数会静默沿用旧口径（键含模型名不够）。
+_IMP_PROMPT_VERSION = "v4-mild-anchor"
+_IMP_CACHE_PATH = os.environ.get(
+    "TRANSCRIPT_IMPORTANCE_CACHE", str(_CACHE_DIR / "transcript_importance_cache.json"))
+_imp_cache: dict[str, float] = {}
+if os.path.exists(_IMP_CACHE_PATH):
+    try:
+        with open(_IMP_CACHE_PATH, encoding="utf-8") as _f:
+            _imp_cache = json.load(_f)
+    except Exception:  # noqa: BLE001
+        _imp_cache = {}
+
+
+def _flush_imp_cache() -> None:
+    try:
+        Path(_IMP_CACHE_PATH).parent.mkdir(parents=True, exist_ok=True)
+        with open(_IMP_CACHE_PATH, "w", encoding="utf-8") as _f:
+            json.dump(_imp_cache, _f, ensure_ascii=False)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _imp_key(sumz, text: str) -> str:
+    """重要性缓存键：含模型名 + 评分标尺版本，任一变了自动失效。
+
+    （只含模型名不够：改 prompt 标尺后若复用旧分数，入选集合会静默沿用旧口径。）
+    """
+    return hashlib.sha1(
+        f"{getattr(sumz, 'model', '?')}\x00{_IMP_PROMPT_VERSION}\x00{text[:1500]}".encode("utf-8")
+    ).hexdigest()
 
 
 def ocr_slide_text_cached(fp) -> str:
@@ -114,12 +154,55 @@ def _body_region_diff(img: Image.Image, prev: np.ndarray) -> float | None:
 
 
 def score_transcript_lines(sumz, segments: list[dict]) -> list[dict]:
-    """为每句文字稿评分讲解重要性（Stranscript），返回带重要度的分句。"""
-    out = []
-    for seg in segments:
-        s = sumz.score_transcript_importance(seg["text"]) if seg["text"].strip() else 0.0
-        out.append({**seg, "importance": s})
-    return out
+    """为每句文字稿评分讲解重要性（Stranscript），返回带重要度的分句。
+
+    性能：原先逐句串行调 LLM，实测 2.5s/句 → 14min 视频(148句)要 6.1min，是整条流程
+    最大单项。现在三层加速，语义不变（同一 prompt、同一模型、同一 0.5 阈值）：
+      1) 批量：一次 LLM 调用评 IMPORTANCE_CHUNK 句（JSON 数组返回）
+      2) 并发：批与批之间 IMPORTANCE_WORKERS 线程并行（纯网络等待）
+      3) 缓存：按 (模型, 句子) 哈希落盘，重跑/调规则/补笔记时零调用
+    """
+    n = len(segments)
+    scores = [0.0] * n
+
+    # 1) 先吃缓存，未命中的才要问模型
+    todo: list[int] = []
+    for i, seg in enumerate(segments):
+        if not seg["text"].strip():
+            continue
+        hit = _imp_cache.get(_imp_key(sumz, seg["text"]))
+        if hit is None:
+            todo.append(i)
+        else:
+            scores[i] = hit
+    cached = n - len(todo)
+
+    if todo:
+        from concurrent.futures import ThreadPoolExecutor
+
+        batches = [todo[i : i + IMPORTANCE_CHUNK] for i in range(0, len(todo), IMPORTANCE_CHUNK)]
+
+        def run_batch(idx_list: list[int]) -> tuple[list[int], list[float]]:
+            vals = sumz.score_transcript_importance_batch(
+                [segments[i]["text"] for i in idx_list]
+            )
+            return idx_list, vals
+
+        with ThreadPoolExecutor(max_workers=min(IMPORTANCE_WORKERS, len(batches))) as pool:
+            for idx_list, vals in pool.map(run_batch, batches):
+                for i, v in zip(idx_list, vals):
+                    scores[i] = v
+                    _imp_cache[_imp_key(sumz, segments[i]["text"])] = v
+        _flush_imp_cache()
+
+    print(
+        f"  [预筛] {n} 句：缓存命中 {cached}，"
+        f"{len(todo) // IMPORTANCE_CHUNK + (1 if len(todo) % IMPORTANCE_CHUNK else 0)} 次批量 LLM 调用"
+    )
+    return [{**seg, "importance": scores[i]} for i, seg in enumerate(segments)]
+
+
+SAMPLE_WORKERS = int(os.environ.get("SAMPLE_WORKERS", "8"))  # ffmpeg 抽帧并发数
 
 
 def sample_candidates(video: Path, segments: list[dict], out_dir: Path, fps: float = 1.0) -> list[dict]:
@@ -127,13 +210,16 @@ def sample_candidates(video: Path, segments: list[dict], out_dir: Path, fps: flo
 
     思路：对每个讲解分句时刻，采样其前后窗口的帧，若连续多帧变化小 → 画面稳定，
     该帧可作为关键候选。候选帧落盘到 out_dir。
+
+    性能：原先逐句串行 spawn ffmpeg（148 句 × 3 帧 = 444 次进程启动，实测 ~2min）。
+    改为按句并发 SAMPLE_WORKERS 路——subprocess 不受 GIL 影响，且**每句的抽帧命令、
+    时间戳、文件名、稳定性判据完全不变**，故帧内容与 OCR 缓存键都不受影响，只是快。
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     shutil.rmtree(out_dir, ignore_errors=True)
     out_dir.mkdir(parents=True)
 
-    cands = []
-    for i, seg in enumerate(segments):
+    def sample_one(i: int, seg: dict) -> dict | None:
         t = seg["time_sec"]
         # 采样该时刻附近 3 帧（t-1, t, t+1）判断稳定性
         window = [t - 1, t, t + 1]
@@ -149,10 +235,9 @@ def sample_candidates(video: Path, segments: list[dict], out_dir: Path, fps: flo
             if fp.exists():
                 frame_paths.append(fp)
         if len(frame_paths) < 2:
-            continue
+            return None
         # 计算相邻帧差
         prev_thumb = None
-        stable_count = 0
         diffs = []
         for fp in frame_paths:
             img = Image.open(fp).convert("RGB")
@@ -163,15 +248,27 @@ def sample_candidates(video: Path, segments: list[dict], out_dir: Path, fps: flo
                 diffs.append(diff)
         # 画面稳定 = 相邻帧差都小
         if diffs and all(d < STABLE_DIFF for d in diffs):
-            cands.append({
+            return {
+                "order": i,
                 "time": t,
                 "filename": frame_paths[1] if len(frame_paths) > 1 else frame_paths[0],
                 "importance": seg.get("importance", 0.0),  # 关联讲解重要度
-            })
-        else:
-            # 不稳定则删掉临时帧
-            for fp in frame_paths:
-                fp.unlink(missing_ok=True)
+            }
+        # 不稳定则删掉临时帧
+        for fp in frame_paths:
+            fp.unlink(missing_ok=True)
+        return None
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=min(SAMPLE_WORKERS, max(1, len(segments)))) as pool:
+        results = list(pool.map(lambda p: sample_one(p[0], p[1]), enumerate(segments)))
+
+    # 按原句序返回（并发完成顺序无关），并去掉内部排序键
+    cands = [r for r in results if r]
+    cands.sort(key=lambda c: c["order"])
+    for c in cands:
+        c.pop("order", None)
     return cands
 
 
@@ -476,6 +573,40 @@ def dedup_candidates(cands: list[dict]) -> list[dict]:
     return kept
 
 
+FRAME_API_WORKERS = int(os.environ.get("FRAME_API_WORKERS", "6"))
+
+
+def _prefetch_frame_api(sumz, cands: list[dict]) -> None:
+    """并发预取每帧的两项网络判断，结果写回 c["_s_ocr"] / c["_anomaly"]。
+
+    原先在主循环里对每帧串行做：score_ocr_importance(LLM ~2.5s) + assess_anomaly
+    (VLM ~4.4s) ≈ 7s/帧；25 帧就是 ~3min。两者互不依赖、与帧序无关，可整批并发。
+
+    调用时机很关键：必须在 3a 本地趟之后——那时这些帧的 OCR 已全部进缓存，
+    所以本函数里的 `ocr_slide_text_cached` 只做字典读取，不会并发写缓存文件。
+    """
+    if not cands:
+        return
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    vision_engine = _get_vision()  # 先单线程初始化，避免并发懒加载竞态
+
+    def probe(c: dict) -> tuple[dict, float, dict]:
+        fp = c["filename"]
+        s_ocr = sumz.score_ocr_importance(ocr_slide_text_cached(fp))
+        try:
+            anomaly = vision_engine.assess_anomaly(fp)
+        except Exception as e:  # noqa: BLE001
+            anomaly = {"anomaly": False, "reason": f"视觉检查失败: {str(e)[:40]}"}
+        return c, s_ocr, anomaly
+
+    with ThreadPoolExecutor(max_workers=min(FRAME_API_WORKERS, len(cands))) as pool:
+        for c, s_ocr, anomaly in pool.map(probe, cands):
+            c["_s_ocr"] = s_ocr
+            c["_anomaly"] = anomaly
+
+
 def guide_capture(sumz, video: Path, segments: list[dict], title: str, course: str | None = None) -> list[dict]:
     """完整文字指引关键帧检测，返回选中关键图 [{time, filename, ocr_text, score}]。
 
@@ -502,11 +633,22 @@ def guide_capture(sumz, video: Path, segments: list[dict], title: str, course: s
     print(f"去重后候选帧 {len(cands)} 张")
 
     # 3) 评分：内容量 + 重复度过滤 + VLM 精判
+    #    拆成三趟。**判据、阈值、语义与原串行实现完全一致**，只是把网络往返搬进并发趟：
+    #      3a 本地趟（零 API）：OCR 内容量 + "与文字稿重复"过滤 —— 被本地规则排除的帧
+    #         仍然一次调用都不发（且顺带把 OCR 填进缓存，供 3b 纯命中）。
+    #      3b 并发趟：Socr(LLM ~2.5s) + 画面异常检查(VLM ~4.4s)。原先每帧串行 7s，
+    #         25 帧 ≈ 3min；两者互不依赖、与帧序无关 → 整批并发。
+    #      3c 决策趟（保持串行）：评分含"与已选图重复度"，依赖累积的 selected_texts，
+    #         顺序有意义，故不并行。
     kept, selected_texts = [], []
     score_log = []  # 评分明细（用于溯源）
-    for c in cands:
+
+    # ---- 3a 本地过滤 ----
+    survivors = []  # [(候选帧, entry, ocr_text)]
+    for ord_i, c in enumerate(cands):
         entry = {
             "time": f"{c['time']//60:02d}:{c['time']%60:02d}",
+            "_ord": ord_i,  # 拆趟后还原原始候选顺序用（写 CSV 前剔除）
             "filename": Path(c["filename"]).name,
             "ocr_text": "",
             "s_ocr": "", "s_transcript": "", "s_dup": "", "score": "",
@@ -536,7 +678,14 @@ def guide_capture(sumz, video: Path, segments: list[dict], title: str, course: s
                 entry["decision"] = "排除:与文字稿重复"
                 score_log.append(entry)
                 continue
-        s_ocr = sumz.score_ocr_importance(ocr_text)
+        survivors.append((c, entry, ocr_text))
+
+    # ---- 3b 并发预取网络判断 ----
+    _prefetch_frame_api(sumz, [s[0] for s in survivors])
+
+    # ---- 3c 串行决策 ----
+    for c, entry, ocr_text in survivors:
+        s_ocr = c.get("_s_ocr", 0.0)
         entry["s_ocr"] = round(s_ocr, 2)
         s_dup = max((sumz.text_similarity(ocr_text, t) for t in selected_texts), default=0.0)
         entry["s_dup"] = round(s_dup, 2)
@@ -554,10 +703,7 @@ def guide_capture(sumz, video: Path, segments: list[dict], title: str, course: s
         entry["score"] = c["score"]
         # 视觉检查：仅用于检测"画面异常"（花屏/全黑/严重遮挡），不判断内容是否重要
         # 重要与否由本地规则（OCR内容量+复杂度+评分）决定——避免视觉API误拒有效画面
-        try:
-            worthy = _get_vision().assess_anomaly(c["filename"])
-        except Exception as e:  # noqa: BLE001
-            worthy = {"anomaly": False, "reason": f"视觉检查失败: {str(e)[:40]}"}
+        worthy = c.get("_anomaly") or {"anomaly": False, "reason": ""}
         entry["visual_verdict"] = worthy["reason"][:60]
         if worthy.get("anomaly"):
             c["reject"] = f"画面异常: {worthy['reason']}"
@@ -579,7 +725,17 @@ def guide_capture(sumz, video: Path, segments: list[dict], title: str, course: s
             selected_texts.append(ocr_text)
             entry["decision"] = f"选中"
             score_log.append(entry)
-            print(f"  [关键图] {kept[-1]['time']} {name} score={score:.2f} ocr={ocr_text[:30]}")
+            print(f"  [关键图] {kept[-1]['time']} {name} score={score:.2f} ocr={ocr_text[:30]}", flush=True)
+        else:
+            # 原先低于阈值的帧不留痕：scores.csv 里查不到它们，"为什么这张集 0 图"
+            # 就无从判断（实测 6分钟聊聊本体 一集 19稳定帧→去重1→静默丢弃）。
+            c["reject"] = f"评分未达标 {score:.2f}<{settings.score_threshold}"
+            entry["decision"] = "排除:评分未达标"
+            score_log.append(entry)
+
+    # 拆趟后 3a 排除项与 3c 决策项是分批追加的，还原成原始候选顺序
+    # （_ord 键不在 CSV fields 里，extrasaction="ignore" 会自动丢弃）
+    score_log.sort(key=lambda e: e["_ord"])
 
     # 写评分明细 CSV（便于溯源）
     import csv as _csv

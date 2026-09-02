@@ -54,7 +54,16 @@ class DeepSeekSummarizer:
         self.model = model
         self.base_url = base_url.rstrip("/")
 
-    def _chat(self, prompt: str, system: str = "你是专业的结构化笔记助手，擅长把视频内容整理为高质量学习笔记。") -> str:
+    # 非流式调用：速览/JSON 判断几秒即回，完整版笔记要生成长文，需给足读超时。
+    # 90s 会让 summarize() 稳定超时失败（3 次重试全废），故长文本生成用 300s。
+    CHAT_TIMEOUT = 300.0
+
+    def _chat(
+        self,
+        prompt: str,
+        system: str = "你是专业的结构化笔记助手，擅长把视频内容整理为高质量学习笔记。",
+        timeout: float | None = None,
+    ) -> str:
         url = f"{self.base_url}/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -72,9 +81,10 @@ class DeepSeekSummarizer:
         import time as _time
 
         last_err = None
+        timeout = timeout or self.CHAT_TIMEOUT
         for attempt in range(3):
             try:
-                resp = httpx.post(url, json=payload, headers=headers, timeout=90)
+                resp = httpx.post(url, json=payload, headers=headers, timeout=timeout)
                 if resp.status_code == 429:
                     _time.sleep(5 * (attempt + 1))
                     continue
@@ -227,6 +237,54 @@ class DeepSeekSummarizer:
             return max(0.0, min(1.0, float(m.group(0)))) if m else 0.0
         except Exception:  # noqa: BLE001
             return 0.0
+
+    def score_transcript_importance_batch(self, texts: list[str]) -> list[float]:
+        """一次 LLM 调用评估多句讲解重要性。
+
+        单句版是 O(n) 次串行网络往返：14min 视频 148 句 = 6.1min（实测 2.5s/句），
+        是整条流程的最大单项。批量版 20 句/次 + 并发 → 同一视频 ~15s。
+        返回与 texts 等长的分数列表；解析或长度有任何问题 → 整批回退逐句，不丢分。
+        """
+        if not texts:
+            return []
+        if len(texts) == 1:
+            return [self.score_transcript_importance(texts[0])]
+
+        import json as _json
+
+        numbered = "\n".join(f"{i + 1}. {t[:1500]}" for i, t in enumerate(texts))
+        # 评分标尺与单句版逐字一致，避免"批量偏松/偏严"改变 >=0.5 的入选集合
+        prompt = f"""评估下面每段视频讲解文字对"学习重点"的重要程度，各给一个 0~1 的分。
+讲解关键概念/方法论/结论/过渡句/寒暄 → 前两者高分，后两者低分。
+
+校准要求：多数讲解句子只是过渡、铺陈、举例或对上一句的复述，这类给 0.3~0.45；
+只有承载了新知识点、方法、定义或结论的句子才给 0.6~1.0。
+
+=== 讲解列表（共 {len(texts)} 条）===
+{numbered}
+
+只返回一个 JSON 数组，长度必须正好是 {len(texts)}，元素为 0~1 数字，顺序与上面一一对应，不要任何其他文字。
+例：[0.8, 0.2, 0.6]"""
+        try:
+            resp = self._chat(prompt, system="你只返回 JSON 数字数组，不返回任何其他内容。").strip()
+            if resp.startswith("```"):
+                resp = resp.split("```")[1].lstrip("json").strip()
+            s, e = resp.find("["), resp.rfind("]")
+            if s < 0 or e < 0:
+                raise ValueError(f"无 JSON 数组: {resp[:80]}")
+            vals = _json.loads(resp[s : e + 1])
+            if not isinstance(vals, list) or len(vals) != len(texts):
+                raise ValueError(f"长度 {len(vals) if isinstance(vals, list) else '?'} != {len(texts)}")
+            out = []
+            for v in vals:
+                try:
+                    out.append(max(0.0, min(1.0, float(v))))
+                except (TypeError, ValueError):
+                    out.append(0.0)
+            return out
+        except Exception:  # noqa: BLE001
+            # 回退：逐句评分（慢，但语义与结果不变）
+            return [self.score_transcript_importance(t) for t in texts]
 
     @staticmethod
     def text_similarity(a: str, b: str) -> float:

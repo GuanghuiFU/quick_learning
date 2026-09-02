@@ -11,3 +11,8 @@ assets/
 assets/screenshots/
 .env
 task_state.db
+.cache
+
+# 处理日志与本地工作草稿
+logs/
+todo/
